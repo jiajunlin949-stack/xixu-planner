@@ -1,0 +1,25 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),http=require('node:http');
+const {chromium,launchOptions}=require('./browser-test-runtime.cjs');
+const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile'),types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'};
+const server=http.createServer((req,res)=>{const name=req.url==='/'?'index.html':req.url.slice(1),file=path.join(raw,name);if(!/^[\w.-]+$/.test(name)||!fs.existsSync(file)){res.writeHead(404).end();return}res.setHeader('Content-Type',types[path.extname(file)]||'text/plain');res.end(fs.readFileSync(file))});
+let browser;
+(async()=>{
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  browser=await chromium.launch(launchOptions);
+  const page=await browser.newPage({viewport:{width:390,height:1000}}),errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.clock.install({time:new Date('2026-09-21T09:00:00+08:00')});
+  const old={format:'xixu-backup',schemaVersion:7,termStart:'2026-08-31',courses:[{id:'c1',name:'数据可视化技术',short:'数据可视化技术',mark:'数',image:null,source:'spreadsheet'},{id:'junk',name:'QC-5-',short:'QC-5-',mark:'Q',image:null,source:'spreadsheet'}],lessons:[{course:'c1',day:0,block:0,period:'1–2',room:'C-5-344 机房',weeks:[3,4],rule:'第 3–4 周'}],tasks:[],notes:[],ocrCorrectionRules:{},agentHistory:[],agentPreferences:{courses:true,tasks:true,notes:true}};
+  await page.addInitScript(value=>localStorage.setItem('xixu-v1',JSON.stringify(value)),old);
+  await page.goto('http://127.0.0.1:'+server.address().port);
+  let state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));
+  assert.equal(state.schemaVersion,10);assert.equal(state.scheduleSettings.count,14);assert.ok(!state.courses.some(item=>item.id==='junk'));
+  await page.locator('#tide-nav [data-page=timetable]').click();
+  assert.equal(await page.locator('.tide-grid-time').count(),14);assert.match(await page.locator('.tide-grid-time').first().innerText(),/08:30[\s\S]*09:10/);assert.match(await page.locator('.tide-grid-cell').filter({hasText:'C-5-344 机房'}).first().innerText(),/C-5-344 机房/);assert.equal(await page.locator('.tide-sub').count(),0);
+  await page.locator('[data-action=settings]').click();await page.locator('[data-action=schedule-settings]').click();
+  assert.equal(await page.locator('#xixu-schedule-preset').count(),0);assert.equal(await page.locator('#xixu-period-count').count(),0);assert.equal(await page.locator('.xixu-period-row').count(),14);await page.locator('[name=periodStart]').first().fill('08:10');await page.locator('[name=periodEnd]').first().fill('08:55');
+  await page.locator('#xixu-schedule-form button[type=submit]').click();await page.locator('[data-action=schedule-settings]').click();await page.locator('[data-action=clear-timetable-range]').click();
+  await page.locator('[name=from]').fill('2026-09-14');await page.locator('[name=to]').fill('2026-09-14');await page.locator('#xixu-clear-timetable-form button[type=submit]').click();
+  state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.scheduleSettings.count,14);assert.deepEqual(state.lessons[0].weeks,[4]);
+  assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({passed:11,checks:['schema v9 migration','default 14 periods','orphan import fragment removed','individual period times shown','full building and room retained','school preset selector removed','period count selector removed','custom time values accepted','schedule saved','date-range clear preserves later weeks','date-range clear preserves schedule settings']},null,2));
+})().catch(error=>{console.error(error.stack);process.exitCode=1}).finally(async()=>{await browser?.close();server.close()});

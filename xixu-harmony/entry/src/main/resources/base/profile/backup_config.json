@@ -1,0 +1,10 @@
+{
+  "allowToBackupRestore": true,
+  "includes": [
+    "/data/storage/el2/base/files/planner-v1.json",
+    "/data/storage/el2/base/files/planner-v1.backup.json"
+  ],
+  "excludes": [],
+  "fullBackupOnly": false,
+  "restoreDeps": ""
+}

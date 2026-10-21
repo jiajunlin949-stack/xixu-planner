@@ -1,0 +1,38 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),http=require('node:http');
+const {chromium,launchOptions}=require('./browser-test-runtime.cjs');
+const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile'),types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'};
+const version=JSON.parse(fs.readFileSync(path.resolve('xixu-harmony/AppScope/app.json5'),'utf8')).app.versionName;
+const versionPattern=new RegExp('汐序\\s*'+version.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+const server=http.createServer((req,res)=>{const name=req.url==='/'?'index.html':req.url.slice(1),file=path.join(raw,name);if(!/^[\w.-]+$/.test(name)||!fs.existsSync(file)){res.writeHead(404).end();return}res.setHeader('Content-Type',types[path.extname(file)]||'text/plain');res.end(fs.readFileSync(file))});
+let browser;const checks=[];
+(async()=>{
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ browser=await chromium.launch(launchOptions);
+ const page=await browser.newPage({viewport:{width:390,height:1000}});
+ await page.addInitScript(()=>{
+   window.__reminderPayloads=[];window.__feedback='';
+   window.XixuReminder={status:()=>'{"enabled":true,"count":0}',enable:()=>true,sync:value=>{window.__reminderPayloads.push(JSON.parse(value));return true}};
+   window.XixuClipboard={copy:value=>{window.__feedback=value;return true}};
+   window.XixuAI={hasKey:()=>false};
+ });
+ await page.goto('http://127.0.0.1:'+server.address().port);
+ const nav=name=>name==='添加'?page.locator('#tide-nav [data-action="add"]').click():page.locator('#tide-nav').getByRole('button',{name,exact:true}).click();
+ await page.getByRole('button',{name:'提醒与设置'}).click();
+  assert.match(await page.locator('#tide-main').innerText(),versionPattern);checks.push('Current version and reminder status render in settings');
+ await page.locator('[name=courseName]').fill('数据挖掘');await page.getByRole('button',{name:'保存课程'}).click();
+ assert.match(await page.locator('#tide-main').innerText(),/课程档案[\s\S]*(选择图片并识别|选择图片)/);checks.push('Adding a course opens its assessment upload entry directly');
+ await page.evaluate(()=>{const line=(value,x,y)=>({value,cornerPoints:[{x:x-30,y:y-10},{x:x+30,y:y-10},{x:x+30,y:y+10},{x:x-30,y:y+10}]});const scan={value:'平时表现 实验报告 小组PPT 小组PPT展示与演讲 期末大项目 Attendance Experiment report PPT PPT Presentation Final project 5% 25% 1次，5% 5% 60%',blocks:[{lines:[line('平时表现 Attendance',80,100),line('实验报告 Experiment report',180,100),line('小组PPT PPT',280,100),line('小组PPT展示与演讲 PPT Presentation',380,100),line('期末大项目 Final project',480,100),line('5%',80,220),line('25%',180,220),line('1次，5%',280,220),line('5%',380,220),line('60%',480,220)]}]};window.XixuReceiveAssessmentOCR(true,JSON.stringify(scan),JSON.parse(localStorage.getItem('xixu-v1')).courses[0].id)});
+ assert.equal(await page.locator('[name=assessmentName]').count(),5);assert.match(await page.locator('#tide-main').innerText(),/核对|结果/);
+ await page.getByRole('button',{name:'保存',exact:true}).click();
+ let state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.courses[0].assessment.length,5);assert.equal(state.courses[0].assessment.reduce((sum,item)=>sum+item.percent,0),100);await page.screenshot({path:'work/beta-course-assessment.png',fullPage:true});checks.push('Assessment OCR pairs bilingual table columns, remains editable, and persists');
+ await page.getByRole('button',{name:'返回',exact:true}).click();await nav('添加');await page.locator('[data-action="create-homework"]').click();await page.locator('[name=title]').fill('测试提醒作业');await page.locator('[name=date]').fill('2026-12-20');await page.locator('[name=time]').fill('20:00');await page.getByRole('button',{name:'保存事项'}).click();
+ const payload=await page.evaluate(()=>window.__reminderPayloads.at(-1)),deadlineReminder=payload.tasks.find(item=>item.title==='测试提醒作业');assert.ok(deadlineReminder);assert.deepEqual(deadlineReminder.reminders,[24,1]);checks.push('Saved deadline synchronizes its two reminder choices to the native bridge');
+ await nav('课表');await page.getByRole('button',{name:'计划周'}).click();await page.locator('#xixu-plan-week-date').evaluate(el=>{el.value='2028-05-17';el.dispatchEvent(new Event('change',{bubbles:true}))});
+ assert.match(await page.locator('#tide-main').innerText(),/5月15日[\s\S]*5月19日[\s\S]*5月20日[\s\S]*5月21日/);
+ await page.locator('[data-action=plan-slot][data-date="2028-05-17"]').first().click();await page.locator('[name=title]').fill('远期项目计划');await page.getByRole('button',{name:'保存事项'}).click();
+ state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.ok(state.tasks.some(item=>item.title==='远期项目计划'&&item.date==='2028-05-17'));assert.match(await page.locator('#tide-main').innerText(),/远期项目计划/);checks.push('Continuous plan week aligns Monday through Sunday and persists a 2028 task on its exact date');
+ await nav('备忘录');await page.locator('.xixu-agent-entry').click();await page.locator('[name=question]').fill('查找2026年12月20日的截止事项');await page.getByRole('button',{name:'发送'}).click();await page.locator('.xixu-agent-history .is-assistant>p').filter({hasText:'测试提醒作业'}).waitFor();checks.push('Local assistant retrieval works without a DeepSeek API key');
+ await page.getByRole('button',{name:'返回',exact:true}).click();await page.getByRole('button',{name:'提醒与设置'}).click();await page.getByRole('button',{name:/内测反馈/}).click();await page.locator('[name=description]').fill('切换课表时画面闪烁');await page.screenshot({path:'work/beta-feedback.png',fullPage:true});await page.getByRole('button',{name:'复制反馈',exact:true}).click();
+  const feedback=await page.evaluate(()=>window.__feedback);assert.match(feedback,versionPattern);assert.match(feedback,/切换课表时画面闪烁/);assert.doesNotMatch(feedback,/数据挖掘|测试提醒作业/);checks.push('Feedback is copyable and excludes timetable and task content');
+ fs.writeFileSync('work/beta-checks.json',JSON.stringify({checks,errors:[]},null,2));console.log(JSON.stringify({passed:checks.length,checks},null,2));
+})().catch(error=>{console.error(error.stack);process.exitCode=1}).finally(async()=>{await browser?.close();server.close()});

@@ -1,0 +1,19 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),http=require('node:http');
+const {chromium,launchOptions}=require('./browser-test-runtime.cjs');
+const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile'),types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'};
+const server=http.createServer((req,res)=>{const name=req.url==='/'?'index.html':req.url.slice(1),file=path.join(raw,name);if(!/^[\w.-]+$/.test(name)||!fs.existsSync(file)){res.writeHead(404).end();return}res.setHeader('Content-Type',types[path.extname(file)]||'text/plain');res.end(fs.readFileSync(file))});
+let browser;
+(async()=>{
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));browser=await chromium.launch(launchOptions);
+  const page=await browser.newPage({viewport:{width:390,height:844}}),today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  const periods=[['08:30','09:10'],['09:15','09:55'],['10:15','10:55'],['11:00','11:40'],['11:45','12:25'],['14:00','14:40'],['14:45','15:25'],['15:45','16:25'],['16:30','17:10'],['17:15','17:55'],['19:00','19:40'],['19:40','20:20'],['20:30','21:10'],['21:10','21:50']].map(([start,end])=>({start,end}));
+  const seed={format:'xixu-backup',schemaVersion:9,termStart:'2026-08-31',scheduleSettings:{preset:'sztu',count:14,periods},courses:[],lessons:[],tasks:[{id:'motion',type:'task',title:'完成动画测试',course:'',date:today,time:'',plan:'',repeat:'none',reminders:[],note:'',done:false,estimateMinutes:0,sessions:[],images:[]}],notes:[],ocrCorrectionRules:{},agentHistory:[],agentPreferences:{courses:true,tasks:true,notes:true}};
+  await page.addInitScript(value=>localStorage.setItem('xixu-v1',JSON.stringify(value)),seed);await page.goto('http://127.0.0.1:'+server.address().port);
+  const checkbox=page.getByRole('checkbox',{name:'完成：完成动画测试'});await checkbox.click();await page.locator('.xixu-complete-burst').waitFor();assert.equal(await page.locator('.xixu-complete-burst').evaluate(node=>getComputedStyle(node).pointerEvents),'none');assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')).tasks[0].done),true);
+  await page.getByRole('button',{name:'提醒与设置'}).click();await page.getByRole('button',{name:/课程节次与时间/}).click();
+  let text=await page.locator('#tide-main').innerText();assert.doesNotMatch(text,/深圳技术大学|学校时间模板|每天显示几节/);assert.match(text,/添加一节/);assert.equal(await page.locator('.xixu-period-row').count(),14);
+  await page.locator('[name=periodStart]').first().fill('08:20');await page.getByRole('button',{name:'添加一节'}).click();assert.equal(await page.locator('.xixu-period-row').count(),15);assert.equal(await page.locator('[name=periodStart]').first().inputValue(),'08:20');
+  await page.getByRole('button',{name:'删除最后一节'}).click();assert.equal(await page.locator('.xixu-period-row').count(),14);assert.equal(await page.locator('[name=periodStart]').first().inputValue(),'08:20');
+  await page.getByRole('button',{name:/保存课程时间/}).click();const state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.scheduleSettings.count,14);assert.equal(state.scheduleSettings.periods[0].start,'08:20');
+  console.log(JSON.stringify({passed:10,checks:['completion uses a transient animation','animation never captures touch or scroll','task state saves immediately','school name removed from schedule settings','period-count selector removed','schedule uses add control','existing times survive adding a period','new period is appended','existing times survive removing a period','edited times persist after save']},null,2));
+})().catch(error=>{console.error(error.stack);process.exitCode=1}).finally(async()=>{await browser?.close();server.close()});

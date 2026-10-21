@@ -1,0 +1,28 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "课程、截止事项和每日安排"
+    },
+    {
+      "name": "form_label",
+      "value": "汐序随手记"
+    },
+    {
+      "name": "form_desc",
+      "value": "从桌面记录事项和想法"
+    },
+    {
+      "name": "form_display_name",
+      "value": "汐序随手记"
+    },
+    {
+      "name": "backup_desc",
+      "value": "备份和恢复汐序的课程、事项和笔记"
+    },
+    {
+      "name": "reminder_permission_reason",
+      "value": "在锁屏和通知面板提醒已保存的截止事项、考试和会议"
+    }
+  ]
+}

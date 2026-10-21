@@ -1,0 +1,15 @@
+{
+  "name": "xixu-planner",
+  "private": true,
+  "version": "0.8.11",
+  "license": "GPL-3.0-only",
+  "engines": { "node": ">=22" },
+  "description": "汐序全量回归与发布包验证",
+  "scripts": {
+    "ci": "powershell -NoProfile -ExecutionPolicy Bypass -File ci/Invoke-XixuCI.ps1 -SkipNativeBuild",
+    "ci:full": "powershell -NoProfile -ExecutionPolicy Bypass -File ci/Invoke-XixuCI.ps1"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

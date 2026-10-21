@@ -1,0 +1,22 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),http=require('node:http');
+const {chromium,launchOptions}=require('./browser-test-runtime.cjs');
+const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile'),types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'};
+const server=http.createServer((req,res)=>{const name=req.url==='/'?'index.html':req.url.slice(1),file=path.join(raw,name);if(!/^[\w.-]+$/.test(name)||!fs.existsSync(file)){res.writeHead(404).end();return}res.setHeader('Content-Type',types[path.extname(file)]||'text/plain');res.end(fs.readFileSync(file))});
+const line=(value,x,y,w=80,h=18)=>({value,cornerPoints:[{x:x-w/2,y:y-h/2},{x:x+w/2,y:y-h/2},{x:x+w/2,y:y+h/2},{x:x-w/2,y:y+h/2}]});
+let browser;
+(async()=>{
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));browser=await chromium.launch(launchOptions);
+  const page=await browser.newPage({viewport:{width:390,height:1000}}),errors=[];page.on('pageerror',error=>errors.push(error.message));
+  const old={format:'xixu-backup',schemaVersion:8,termStart:'2026-08-31',scheduleSettings:{preset:'sztu',count:14,periods:[['08:30','09:10'],['09:15','09:55'],['10:15','10:55'],['11:00','11:40'],['11:45','12:25'],['14:00','14:40'],['14:45','15:25'],['15:45','16:25'],['16:30','17:10'],['17:15','17:55'],['19:00','19:40'],['19:40','20:20'],['20:30','21:10'],['21:10','21:50']].map(([start,end])=>({start,end}))},courses:[{id:'old',name:'原课程',short:'原课程',mark:'原',image:null,source:'spreadsheet'},{id:'keep',name:'截图外课程',short:'截图外课程',mark:'截',image:null,source:'spreadsheet'}],lessons:[{course:'old',day:0,block:0,period:'1–2',room:'旧教室',weeks:[3],rule:'第 3 周'},{course:'keep',day:4,block:2,period:'6–7',room:'C-5-243',weeks:[3],rule:'第 3 周'}],tasks:[],notes:[],ocrCorrectionRules:{},agentHistory:[],agentPreferences:{courses:true,tasks:true,notes:true}};
+  await page.addInitScript(value=>{localStorage.setItem('xixu-v1',JSON.stringify(value));window.XixuOCR={recognize:()=>true}},old);await page.goto('http://127.0.0.1:'+server.address().port);
+  await page.locator('#tide-nav [data-page=timetable]').click();await page.locator('[data-action=import]').click();await page.locator('#xixu-ocr-image').setInputFiles({name:'partial.png',mimeType:'image/png',buffer:Buffer.from('fake')});
+  const periods=[['08:10','08:55'],['09:00','09:45'],['10:15','11:00'],['11:05','11:50'],['14:30','15:15'],['15:20','16:05'],['16:30','17:15'],['17:20','18:05'],['19:30','20:15'],['20:25','21:10']];
+  const blocks=[{value:'第3周',lines:[line('第3周',500,40)]},{value:'周一',lines:[line('周一',200,95)]},{value:'周二',lines:[line('周二',330,95)]},{value:'周三',lines:[line('周三',460,95)]},{value:'周四',lines:[line('周四',590,95)]},{value:'周五',lines:[line('周五',720,95)]}];
+  periods.forEach(([start,end],index)=>{const y=170+index*75;blocks.push({value:String(index+1),lines:[line(String(index+1),45,y,25)]},{value:start,lines:[line(start,55,y+16,50)]},{value:end,lines:[line(end,55,y+31,50)]})});
+  blocks.push({value:'新课程',lines:[line('新课程',200,178,95)]},{value:'@C-5-237',lines:[line('@C-5-237',200,238,110)]});
+  const scan={width:1000,height:1000,value:'第3周',blocks};await page.evaluate(scan=>window.XixuReceiveOCR(true,JSON.stringify(scan)),scan);
+  assert.match(await page.locator('#xixu-ocr-review').innerText(),/截图以外的课程会保持不变/);assert.match(await page.locator('#xixu-ocr-review').innerText(),/使用识别出的上课时间/);
+  await page.locator('[data-action=confirm-timetable]').click();const state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1'))),names=state.courses.map(item=>item.name);
+  assert.ok(names.includes('新课程'));assert.ok(names.includes('截图外课程'));assert.ok(!names.includes('原课程'));assert.ok(state.lessons.some(item=>item.course===state.courses.find(course=>course.name==='截图外课程').id&&item.weeks.includes(3)));assert.equal(state.scheduleSettings.count,10);assert.deepEqual(state.scheduleSettings.periods[0],{start:'08:10',end:'08:55'});assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({passed:8,checks:['OCR preview shown','recognized changes editable','detected times offered','covered slot replaced','uncovered lesson preserved','obsolete OCR course removed','ten-period schedule applied','no browser runtime errors']},null,2));
+})().catch(error=>{console.error(error.stack);process.exitCode=1}).finally(async()=>{await browser?.close();server.close()});

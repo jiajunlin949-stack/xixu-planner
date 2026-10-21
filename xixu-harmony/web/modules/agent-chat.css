@@ -1,0 +1,144 @@
+/* A calm chat workspace: independent scrolling, durable sessions, one glass composer. */
+#tide-planner .xixu-agent-topbar{grid-template-columns:40px minmax(0,1fr) 40px;display:flex;align-items:center;gap:10px;flex:none;min-height:68px;margin:0;padding:12px 22px 10px;border-bottom:1px solid rgba(89,105,146,.1)}
+#tide-planner .xixu-agent-topbar .tide-icon{width:40px;height:40px;margin:0;border:1px solid rgba(255,255,255,.68);background:rgba(255,255,255,.28);box-shadow:0 5px 16px rgba(73,89,125,.06);color:var(--tide-deep)}
+#tide-planner .xixu-agent-brand{align-items:center;gap:10px;display:block;flex:1;min-width:0}
+#tide-planner .xixu-agent-brand strong{display:block;color:var(--tide-deep);font-size:15px;font-weight:650;line-height:1.3;letter-spacing:0}
+#tide-planner .xixu-agent-brand small{display:block;margin-top:4px;color:var(--tide-muted);font-size:10px;letter-spacing:0}
+#tide-planner .xixu-agent-new{justify-self:end;color:var(--tide-accent)}
+#tide-planner .xixu-agent-shell{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;padding:0;overflow:hidden}
+#tide-planner .xixu-agent-session{gap:2px;border-bottom:1px solid transparent;display:flex;align-items:center;flex:initial;min-width:0;margin:3px 0;border:0;border-radius:12px;background:transparent}
+#tide-planner .xixu-agent-session.is-active{border-bottom-color:var(--tide-accent);border:0;background:rgba(115,125,172,.13)}
+#tide-planner .xixu-agent-session button{min-height:28px;padding:3px 6px;border:0;border-radius:7px;background:transparent;color:var(--tide-muted);font:inherit;font-size:10px;white-space:nowrap}
+#tide-planner .xixu-agent-session.is-active>button:first-child{color:var(--tide-deep)}
+#tide-planner .xixu-agent-history{display:grid;gap:24px;margin:0;padding:0}
+#tide-planner .xixu-agent-history>.xixu-agent-message{position:relative;max-width:100%;min-width:0;border:0;border-radius:0;background:transparent;box-shadow:none;padding:0}
+#tide-planner .xixu-agent-history>.is-user{justify-self:end;padding:0 0 2px;color:var(--tide-deep);max-width:86%}
+#tide-planner .xixu-agent-message p{max-width:none;margin:4px 0 0;font-size:15px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+#tide-planner .xixu-agent-message.is-assistant p{margin-left:42px;padding:2px 0;border:0;border-radius:0;background:transparent;box-shadow:none}
+#tide-planner .xixu-agent-message.is-user p{margin-left:auto;padding:11px 15px;border:0;border-radius:18px 18px 5px 18px;background:rgba(133,145,198,.16)}
+#tide-planner .xixu-agent-message-head{min-height:32px;gap:20px}
+#tide-planner .xixu-agent-message.is-user .xixu-agent-message-head{justify-content:flex-end;min-height:22px}
+#tide-planner .xixu-agent-identity{display:flex;align-items:center;min-width:0;gap:10px}
+#tide-planner .xixu-agent-identity>span:last-child{color:var(--tide-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+#tide-planner .xixu-agent-avatar{display:grid;place-items:center;width:30px;height:30px;border-radius:11px;flex:0 0 auto;font-size:11px;font-weight:600}
+#tide-planner .xixu-agent-avatar.xixu-agent-avatar-agent{color:#fff;width:32px;height:32px;border-radius:12px;background:#7e83ad;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}
+#tide-planner .xixu-agent-avatar.xixu-agent-avatar-agent svg{width:15px;height:15px;stroke-width:1.8}
+#tide-planner .is-user .xixu-agent-identity{justify-content:flex-end}
+#tide-planner .is-user .xixu-agent-avatar{order:2}
+#tide-planner .xixu-message-menu{position:relative;flex-shrink:0}
+#tide-planner .xixu-message-menu summary{display:grid;place-items:center;list-style:none;height:36px;margin-right:-8px;border-radius:10px;cursor:pointer;color:var(--tide-muted);width:40px;margin:0}
+#tide-planner .xixu-message-menu summary::-webkit-details-marker{display:none}
+#tide-planner .xixu-message-menu summary svg{width:19px;height:19px}
+#tide-planner .xixu-message-menu summary:focus-visible{outline:2px solid var(--tide-accent);outline-offset:2px}
+#tide-planner .xixu-message-menu[open]{z-index:8}
+#tide-planner .xixu-message-menu[open] summary{background:rgba(var(--prism-blue),.18)}
+#tide-planner .xixu-message-actions{position:absolute;right:0;top:100%;width:200px;max-width:calc(100vw - 64px);padding:6px;border:1px solid var(--prism-border);border-radius:16px;z-index:8;border-color:rgba(113,126,170,.22);background:#edf0f8;box-shadow:0 8px 22px rgba(48,61,89,.13)}
+#tide-planner .xixu-message-actions button{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:10px;border-radius:10px;text-align:left;font:inherit;color:var(--tide-deep);border:0;background:transparent}
+#tide-planner .xixu-message-actions button span{font-size:13px;color:inherit}
+#tide-planner .xixu-message-actions button svg{width:16px;height:16px}
+#tide-planner .xixu-message-actions button:hover{background:rgba(var(--prism-blue),.14)}
+#tide-planner .xixu-message-actions button.is-destructive{color:#996475}
+#tide-planner .xixu-message-actions>small{display:block;padding:5px 10px;color:var(--tide-muted);font-size:10px;line-height:1.5}
+#tide-planner .xixu-agent-empty{justify-items:center;display:flex;flex:1;flex-direction:column;justify-content:center;align-items:center;gap:22px;padding:28px 0 70px;text-align:center}
+#tide-planner .xixu-agent-empty>strong{color:var(--tide-deep);letter-spacing:0;max-width:100%;font-size:clamp(24px,4vw,32px);font-weight:550;line-height:1.4}
+#tide-planner .xixu-agent-quick-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));width:min(100%,390px);margin-top:20px!important;gap:4px 18px!important;margin:8px 0 0!important}
+#tide-planner .xixu-agent-quick-grid button{grid-template-columns:23px 1fr;grid-template-rows:auto auto;column-gap:8px;row-gap:2px;width:100%;border:0;border-bottom:1px solid rgba(89,125,140,.15);border-radius:0;background:transparent;color:var(--tide-deep);text-align:left;display:flex;align-items:center;gap:9px;min-height:46px;padding:10px 2px;border-bottom-color:rgba(102,115,159,.14);font:inherit;font-size:13px}
+#tide-planner .xixu-agent-quick-grid button>span:first-child{place-items:center;display:block;grid-row:auto;color:inherit}
+#tide-planner .xixu-agent-quick-grid button>span:nth-child(2){font-size:13px}
+#tide-planner .xixu-agent-quick-grid button small{color:var(--tide-muted);font-size:10px}
+#tide-planner .xixu-agent-quick-grid button:hover{color:var(--tide-accent)}
+#tide-planner .xixu-agent-quick-grid svg{width:16px;height:16px}
+#tide-planner .xixu-agent-composer{position:relative;bottom:auto;margin:0;grid-template-columns:40px minmax(0,1fr) 40px;gap:8px;padding:9px;border:1px solid rgba(255,255,255,.8);border-radius:24px;background:rgba(226,231,247,.66);-webkit-backdrop-filter:blur(10px) saturate(1.08);backdrop-filter:blur(10px) saturate(1.08);box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 6px 20px rgba(77,91,134,.09)}
+#tide-planner .xixu-agent-composer:focus-within{outline:0;border-color:rgba(107,120,169,.34);box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 6px 20px rgba(77,91,134,.1)}
+#tide-planner .xixu-agent-image-button{border:0;background:transparent;color:var(--tide-accent);box-shadow:none}
+#tide-planner .xixu-agent-send{background:#727da8;box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}
+#tide-planner .xixu-agent-answer{border:0;border-radius:0;background:transparent;box-shadow:none;padding:12px 0 4px 42px}
+#tide-planner .xixu-agent-choices{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 2px}
+#tide-planner .xixu-agent-choices button{min-height:38px;padding:8px 14px;border:1px solid rgba(var(--prism-blue),.3);border-radius:999px;background:rgba(var(--prism-blue),.1);color:var(--tide-deep);font:inherit;font-size:12px}
+#tide-planner .xixu-agent-destination{display:flex;align-items:center;gap:9px;width:100%;margin-top:14px;padding:12px 0;border:0;border-top:1px solid var(--tide-line);border-radius:0;background:transparent;color:var(--tide-accent);font:inherit;text-align:left}
+#tide-planner .xixu-agent-destination span{flex:1;font-size:13px;font-weight:600}
+#tide-planner .xixu-agent-destination svg{width:16px;height:16px}
+#tide-planner .xixu-agent-action{gap:10px;padding:13px 0 2px;border:0;border-top:1px solid var(--tide-line);border-radius:0;background:transparent}
+#tide-planner .xixu-agent-action.is-risk{padding:13px 12px 12px;border:1px solid rgba(180,75,55,.2);border-radius:14px;background:rgba(255,243,239,.58)}
+#tide-planner .xixu-agent-edit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 14px;margin:2px 0}
+#tide-planner .xixu-agent-edit-grid.is-task .xixu-agent-edit-field:first-child{grid-column:1/-1}
+#tide-planner .xixu-agent-edit-field{display:grid;gap:3px;min-width:0;color:var(--tide-muted);font-size:10px}
+#tide-planner .xixu-agent-edit-field input,#tide-planner .xixu-agent-edit-field select{width:100%;min-width:0;height:36px;padding:4px 0;border:0;border-bottom:1px solid rgba(72,119,134,.24);border-radius:0;outline:0;background:transparent;color:var(--tide-deep);font:inherit;font-size:13px;font-variant-numeric:tabular-nums}
+#tide-planner .xixu-agent-edit-field input:focus,#tide-planner .xixu-agent-edit-field select:focus{border-bottom-color:var(--tide-accent);box-shadow:0 1px 0 var(--tide-accent)}
+#tide-planner .xixu-agent-edit-field .xixu-control-trigger{min-height:36px;padding:4px 0;border:0;border-bottom:1px solid rgba(72,119,134,.24);border-radius:0;background:transparent;box-shadow:none;color:var(--tide-deep);font-size:13px}
+#tide-planner .xixu-agent-edit-field .xixu-control-trigger:focus-visible{border-bottom-color:var(--tide-accent);outline:0;box-shadow:0 1px 0 var(--tide-accent)}
+#tide-planner .xixu-agent-edit-field .xixu-control-trigger svg{width:15px;height:15px;color:var(--tide-muted)}
+#tide-planner .xixu-agent-action .tide-detail-actions{margin-top:4px}
+#tide-planner[data-panel="agent"] #tide-main,#tide-planner[data-panel="agent"] #tide-main>.tide-view{overflow:visible;will-change:auto;transform:none}
+#tide-planner[data-panel="agent"] #tide-main{z-index:40}
+#tide-planner[data-panel="agent"] .tide-toast{position:fixed;z-index:50;left:14px;right:14px;bottom:calc(112px + env(safe-area-inset-bottom));width:auto;max-width:760px;margin:0 auto}
+#tide-planner[data-panel="agent"] .xixu-control-layer{z-index:60}
+body:has(#tide-planner[data-panel="agent"]) #xixu-save-error{position:fixed;inset:0 0 auto;z-index:100}
+#tide-planner .xixu-agent-workspace{position:fixed;inset:0;z-index:30;display:grid;grid-template-columns:250px minmax(0,1fr);height:100dvh;overflow:hidden;background:#edf0f8;color:var(--tide-deep);isolation:isolate}
+#tide-planner .xixu-agent-sidebar{display:flex;flex-direction:column;min-height:0;min-width:0;padding:22px 14px 16px;background:#e6eaf4;border-right:1px solid rgba(89,105,146,.13)}
+#tide-planner .xixu-agent-sidebar-head{display:flex;align-items:center;justify-content:space-between;padding:0 8px 20px}
+#tide-planner .xixu-agent-sidebar-head strong{font-size:17px;font-weight:650}
+#tide-planner .xixu-agent-sidebar-new{display:flex;align-items:center;gap:11px;min-height:45px;padding:10px 13px;border:1px solid rgba(99,112,165,.22);border-radius:14px;background:rgba(255,255,255,.28);color:var(--tide-deep);font:inherit;font-size:14px;text-align:left}
+#tide-planner .xixu-agent-sidebar-new svg{width:18px;height:18px;color:var(--tide-accent)}
+#tide-planner .xixu-agent-session-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin:16px -3px 12px;padding:0 3px 6px;scrollbar-width:thin}
+#tide-planner .xixu-agent-session .xixu-agent-session-select{display:flex;align-items:center;gap:10px;flex:1;min-width:0;min-height:45px;padding:11px 10px;border:0;border-radius:12px;background:transparent;color:var(--tide-deep);font:inherit;font-size:13px;text-align:left}
+#tide-planner .xixu-agent-session-select>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tide-planner .xixu-agent-session-select>svg{flex:none;width:16px;height:16px;color:var(--tide-muted)}
+#tide-planner .xixu-agent-session-busy{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tide-accent)}
+#tide-planner .xixu-agent-library{display:flex;align-items:center;gap:10px;flex:none;min-height:44px;padding:11px 8px;border:0;border-top:1px solid rgba(99,112,165,.15);border-radius:0;background:transparent;color:var(--tide-deep);font:inherit;font-size:13px;text-align:left}
+#tide-planner .xixu-agent-library span{flex:1}
+#tide-planner .xixu-agent-library svg{width:17px;height:17px;color:var(--tide-accent)}
+#tide-planner .xixu-agent-topbar .tide-icon,#tide-planner .xixu-agent-sidebar-head .tide-icon{width:40px;height:40px;margin:0;border:0;background:transparent;box-shadow:none;color:var(--tide-deep)}
+#tide-planner .xixu-agent-brand>span{display:block;margin-top:3px;font-size:12px;color:var(--tide-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tide-planner .xixu-agent-drawer-toggle,#tide-planner .xixu-agent-drawer-close,#tide-planner .xixu-agent-drawer-scrim,#tide-planner .xixu-agent-topbar .xixu-agent-new{display:none}
+#tide-planner .xixu-agent-chat-scroll{flex:1;min-height:0;min-width:0;overflow-y:auto;overscroll-behavior:contain;padding:22px 26px;scrollbar-width:thin;scrollbar-color:rgba(95,112,160,.25) transparent}
+#tide-planner .xixu-agent-chat-content{width:min(100%,760px);min-height:100%;margin:auto;display:flex;flex-direction:column}
+#tide-planner .xixu-agent-session .xixu-message-actions button{display:flex;min-height:44px;padding:10px;white-space:normal}
+#tide-planner .xixu-agent-name-form{display:flex;gap:6px;padding:8px 4px 12px;align-items:center}
+#tide-planner .xixu-agent-name-form input{width:100%;min-width:0;min-height:36px;padding:5px 3px;border:0;border-bottom:1px solid var(--tide-accent);border-radius:0;background:transparent;box-shadow:none;font:inherit;font-size:13px;color:var(--tide-deep)}
+#tide-planner .xixu-agent-name-form button,#tide-planner .xixu-agent-delete-prompt button{flex:none;min-height:36px;padding:5px 6px;border:0;background:transparent;color:var(--tide-accent);font:inherit;font-size:12px}
+#tide-planner .xixu-agent-name-form button svg{width:16px;height:16px}
+#tide-planner .xixu-agent-delete-prompt{padding:9px 10px;margin:5px 0 10px;border-left:2px solid #ac8793;font-size:12px;line-height:1.65}
+#tide-planner .xixu-agent-delete-prompt>div{display:flex;justify-content:flex-end;gap:8px}
+#tide-planner .xixu-agent-delete-prompt .is-destructive{color:#966574}
+#tide-planner .xixu-agent-load-earlier{align-self:center;min-height:40px;margin:0 0 20px;border:0;background:transparent;font:inherit;font-size:12px;color:var(--tide-accent)}
+#tide-planner .xixu-agent-empty-mark{display:grid;place-items:center;width:50px;height:50px;border-radius:18px;background:rgba(136,147,196,.13);color:#757aa8}
+#tide-planner .xixu-agent-empty-mark svg{width:25px;height:25px;stroke-width:1.5}
+#tide-planner .xixu-agent-quick-grid button svg{width:17px;height:17px;color:var(--tide-accent);flex:none}
+#tide-planner .xixu-agent-thinking{padding:20px 0 10px 42px;min-height:35px}
+#tide-planner .xixu-agent-composer-dock{flex:none;width:min(100%,812px);margin:auto;padding:12px 26px max(20px,env(safe-area-inset-bottom));background:transparent}
+#tide-planner .xixu-agent-composer textarea{width:100%;max-height:min(150px,25dvh);padding:10px 2px;border:0;border-radius:0;background:transparent;font-size:15px;line-height:1.45}
+#tide-planner .xixu-agent-image-button,#tide-planner .xixu-agent-send{width:40px;height:40px}
+#tide-planner .xixu-agent-send:disabled{opacity:.45;cursor:default}
+#tide-planner .xixu-agent-editing{margin:0 0 9px;padding:5px 2px;border-radius:0;background:transparent;color:var(--tide-muted);font-size:12px}
+#tide-planner .xixu-agent-editing button{min-height:32px;color:var(--tide-accent);font:inherit}
+#tide-planner .xixu-agent-refs{display:block;margin:5px 0 14px;padding:0;border:0;background:transparent}
+#tide-planner .xixu-agent-refs>summary{display:flex;align-items:center;gap:8px;min-height:38px;list-style:none;cursor:pointer;color:var(--tide-accent);font-size:12px}
+#tide-planner .xixu-agent-refs>summary::-webkit-details-marker{display:none}
+#tide-planner .xixu-agent-refs>summary>span{display:grid;place-items:center}
+#tide-planner .xixu-agent-refs svg{width:14px;height:14px}
+#tide-planner .xixu-agent-refs>div{display:grid;gap:3px}
+#tide-planner .xixu-agent-ref{padding:6px 0;border-bottom:1px solid rgba(116,130,186,.12)}
+#tide-planner .xixu-agent-refs button{display:flex;gap:8px;align-items:center;width:100%;min-width:0;min-height:40px;padding:7px 2px;border:0;border-radius:0;background:transparent;box-shadow:none;text-align:left;font:inherit;font-size:13px;color:var(--tide-deep)}
+#tide-planner .xixu-agent-refs button>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tide-planner .xixu-agent-refs button small{flex:none;color:var(--tide-muted);font-size:11px}
+#tide-planner .xixu-agent-ref>p{margin:0 0 4px!important;font-size:12px!important;line-height:1.65!important;color:var(--tide-muted);white-space:pre-wrap;max-height:7em;overflow:auto}
+#tide-planner .xixu-agent-message>.xixu-agent-refs{margin-left:42px}
+#tide-planner .xixu-agent-workspace button:focus-visible,#tide-planner .xixu-agent-workspace summary:focus-visible{outline:2px solid var(--tide-accent);outline-offset:2px}
+@media(max-width:350px){#tide-planner .xixu-agent-edit-grid{grid-template-columns:1fr}}
+@media(max-width:390px){#tide-planner .xixu-agent-quick-grid{gap:2px 12px!important}#tide-planner .xixu-agent-empty>strong{font-size:26px}}
+@media(max-width:759px){#tide-planner .xixu-agent-workspace{display:block}
+  #tide-planner .xixu-agent-sidebar{position:absolute;inset:0 auto 0 0;z-index:3;width:min(300px,86vw);padding-top:max(20px,env(safe-area-inset-top));transform:translateX(-102%);visibility:hidden;transition:transform 180ms ease,visibility 180ms;background:#e8ecf6}
+  #tide-planner .xixu-agent-workspace.is-drawer-open .xixu-agent-sidebar{transform:none;visibility:visible}
+  #tide-planner .xixu-agent-workspace.is-drawer-open .xixu-agent-drawer-scrim{display:block;position:absolute;inset:0;z-index:2;width:100%;height:100%;padding:0;border:0;border-radius:0;background:rgba(49,57,82,.24)}
+  #tide-planner .xixu-agent-topbar{gap:5px;min-height:65px;padding:10px 12px;border-bottom-color:rgba(89,105,146,.1)}
+  #tide-planner .xixu-agent-drawer-toggle,#tide-planner .xixu-agent-drawer-close,#tide-planner .xixu-agent-topbar .xixu-agent-new{display:grid}
+  #tide-planner .xixu-agent-chat-scroll{padding:22px 18px}
+  #tide-planner .xixu-agent-composer-dock{padding:10px 14px max(14px,env(safe-area-inset-bottom))}
+  #tide-planner .xixu-agent-empty{padding-bottom:40px}
+  #tide-planner .xixu-agent-empty>strong{font-size:26px}
+  #tide-planner .xixu-agent-brand strong{font-size:14px}
+  #tide-planner .xixu-agent-brand>span{font-size:11px}}
+@media(max-width:350px){#tide-planner .xixu-agent-answer{padding-left:0}#tide-planner .xixu-agent-chat-scroll{padding-left:14px;padding-right:14px}#tide-planner .xixu-agent-quick-grid{gap:4px 10px!important}#tide-planner .xixu-agent-quick-grid button,#tide-planner .xixu-agent-quick-grid button>span:nth-child(2){font-size:12px}}
+@media(prefers-reduced-motion:reduce){#tide-planner .xixu-agent-sidebar{transition:none}#tide-planner .xixu-agent-thinking i{animation:none}}
+@media(forced-colors:active){#tide-planner .xixu-agent-workspace{background:Canvas;color:CanvasText}#tide-planner .xixu-agent-sidebar{background:Canvas;border-right-color:CanvasText}#tide-planner .xixu-agent-composer{border-color:CanvasText;background:Canvas}}

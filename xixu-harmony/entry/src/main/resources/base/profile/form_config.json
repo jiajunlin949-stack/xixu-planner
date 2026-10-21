@@ -1,0 +1,21 @@
+{
+  "forms": [
+    {
+      "name": "xixu_quick_card",
+      "displayName": "$string:form_display_name",
+      "description": "$string:form_desc",
+      "src": "./ets/widget/XixuQuickCard.ets",
+      "uiSyntax": "arkts",
+      "window": {
+        "designWidth": 360,
+        "autoDesignWidth": true
+      },
+      "colorMode": "auto",
+      "isDynamic": false,
+      "isDefault": true,
+      "updateEnabled": false,
+      "defaultDimension": "2*2",
+      "supportDimensions": ["2*2"]
+    }
+  ]
+}

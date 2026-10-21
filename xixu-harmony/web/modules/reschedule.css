@@ -1,0 +1,28 @@
+/* Rescheduled lessons are date-specific exceptions, not changes to the weekly course palette. */
+#tide-planner .xixu-home-week button[aria-current=date] strong{display:grid;place-items:center;width:29px;height:29px;border-radius:50%;background:#b64755;color:#fff;font-weight:700}
+#tide-planner .xixu-home-week button[aria-current=date] small{color:#a94150;font-weight:650}
+#tide-planner .xixu-home-week button.has-reschedule i{width:6px;height:6px;background:#c14c58;box-shadow:0 0 0 3px rgba(193,76,88,.12)}
+#tide-planner .xixu-home-week button[aria-current=date].has-reschedule i{background:#d7a14d;box-shadow:0 0 0 3px rgba(215,161,77,.18)}
+#tide-planner .xixu-home-lesson.is-rescheduled-in{position:relative;border-color:rgba(187,66,80,.44);background:linear-gradient(120deg,#fae4e4,#fff0e9 68%,#fff7ec);box-shadow:inset 3px 0 #b94352,0 4px 14px rgba(151,62,72,.08)}
+#tide-planner .xixu-home-lesson.is-rescheduled-in>span{background:#b94352!important;color:#fff!important}
+#tide-planner .xixu-home-lesson.is-rescheduled-in>button strong{color:#71333d}
+#tide-planner .xixu-home-lesson.is-rescheduled-in>button small{color:#a04450;font-weight:650}
+#tide-planner .xixu-home-lesson.is-rescheduled-in>time{color:#863a46;font-weight:650}
+#tide-planner .tide-lesson.is-rescheduled-in{border-color:rgba(187,66,80,.38);background:linear-gradient(120deg,#fae4e4,#fff1eb 72%,#fff8ed);box-shadow:inset 3px 0 #b94352}
+#tide-planner .tide-lesson.is-rescheduled-in button{border-left-color:#b94352!important;background:linear-gradient(120deg,#fae4e4,#fff1eb 72%,#fff8ed)!important;color:#71333d!important}
+#tide-planner .tide-lesson.is-rescheduled-in button small{color:#98404c!important;font-weight:650}
+#tide-planner button.tide-grid-cell.xixu-course-tone.is-rescheduled-in{border-left:3px solid #b94352!important;background:linear-gradient(145deg,#f6d8dc,#fff0e7 70%,#fff6e7)!important;color:#71333d!important;box-shadow:0 2px 8px rgba(151,62,72,.12)}
+#tide-planner button.tide-grid-cell.is-rescheduled-in small{color:#98404c;font-weight:700}
+#tide-planner .xixu-home-lesson.is-rescheduled-out,
+#tide-planner .tide-lesson.is-rescheduled-out,
+#tide-planner button.tide-grid-cell.is-rescheduled-out{opacity:.27;filter:saturate(.35)}
+#tide-planner .xixu-agent-action.xixu-reschedule-preview{display:grid;gap:12px;border:0;border-top:1px solid rgba(187,66,80,.2);background:transparent}
+#tide-planner .xixu-reschedule-preview>span{color:#98404c}
+#tide-planner .xixu-reschedule-route{display:grid;grid-template-columns:minmax(0,1fr) 22px minmax(0,1fr);align-items:center;gap:8px}
+#tide-planner .xixu-reschedule-route>span{display:grid;gap:4px;min-width:0}
+#tide-planner .xixu-reschedule-route>span:last-child b{color:#a53f4d}
+#tide-planner .xixu-reschedule-route small{color:var(--tide-muted);font-size:11px}
+#tide-planner .xixu-reschedule-route b{font-size:14px;font-weight:650;font-variant-numeric:tabular-nums}
+#tide-planner .xixu-reschedule-route>svg{width:17px;color:#9a8590}
+@media(prefers-reduced-transparency:reduce){#tide-planner .xixu-agent-action.xixu-reschedule-preview{background:transparent}}
+@media(prefers-reduced-motion:reduce){#tide-planner .is-rescheduled-in,#tide-planner .is-rescheduled-out{transition:none!important}}

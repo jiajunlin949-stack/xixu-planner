@@ -1,0 +1,11 @@
+{
+  "app": {
+    "bundleName": "com.xixu.planner",
+    "vendor": "xixu",
+    "versionCode": 811,
+    "versionName": "0.8.11",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}
+
