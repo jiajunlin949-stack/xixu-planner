@@ -6,6 +6,10 @@
 
 **阶段：早期内测。** 当前公开的是经过隐私清理的开发快照，不是已验证适配所有手机的正式发行版。首次公开提交不包含原私有开发历史、个人课表、备忘录或签名材料。
 
+**源码预览版：`v0.8.11-source.1`。** 这是可复现的开源工程版本，不是华为商城更新包。参见 [版本记录](CHANGELOG.md) 和 [五分钟演示](docs/DEMO.md)。
+
+公开版可以独立预览和运行本地规则、课表、任务、笔记及本机检索，**不需要 Docker、Milvus 或个人微信资料**。电脑知识库是可选的个人扩展；真实资料入库、私有数据库和账号连接信息不属于本次发布。
+
 完整的功能验收、手机/电脑知识库边界和分阶段交付标准见 [需求验收与下一版计划](docs/PROJECT_STATUS_AND_PLAN.md)。未实现的适配、真实设备测试和路线图不会标为已交付。
 
 ## 功能
@@ -20,7 +24,7 @@
 
 ## 先了解这些限制
 
-- **华为 `.hdoc` 正文与图片解码尚未实现。** 能识别格式并给出诊断，不等于能迁移内容；不能承诺 74 条真实备忘录已全量无损迁移。
+- **华为 `.hdoc` 正文与图片解码尚未实现。** 能识别格式并给出诊断，不等于能迁移内容；不能承诺实际备忘录已全量无损迁移。
 - HTML 图文原件独立保存。JSON 备份不包含这些外部原件；请另外保留全部源 HTML，不能仅导出 JSON 后卸载应用。
 - 当前本地检索不是真正的学习型 Embedding，也未使用 Chroma、LangChain 或 LlamaIndex。详见 [检索架构](xixu-harmony/RAG_ARCHITECTURE.md)。
 - 联网模型需用户自行配置。原生请求不是 SSE 流式输出；离线规则回复不代表已连接大模型。
@@ -32,7 +36,7 @@
 建议使用 Node.js 22、Windows PowerShell 和 Chromium / Edge。
 
 ```powershell
-npm install
+npm ci
 npx playwright install chromium
 node work/prepare-native.cjs
 node work/serve-native-preview.cjs
