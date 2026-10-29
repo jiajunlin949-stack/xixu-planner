@@ -1,8 +1,12 @@
 # 汐序 · Xixu Planner
 
+[![Public regression](https://github.com/jiajunlin949-stack/xixu-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/jiajunlin949-stack/xixu-planner/actions/workflows/ci.yml)
+
 面向 HarmonyOS 的校园日程与个人知识整理应用：把课表、待办、备忘录和对话式助手放在同一个工作空间。
 
 **阶段：早期内测。** 当前公开的是经过隐私清理的开发快照，不是已验证适配所有手机的正式发行版。首次公开提交不包含原私有开发历史、个人课表、备忘录或签名材料。
+
+完整的功能验收、手机/电脑知识库边界和分阶段交付标准见 [需求验收与下一版计划](docs/PROJECT_STATUS_AND_PLAN.md)。未实现的适配、真实设备测试和路线图不会标为已交付。
 
 ## 功能
 
@@ -40,7 +44,7 @@ node work/serve-native-preview.cjs
 npm run ci
 ```
 
-公开 CI 运行 39 个独立回归脚本和资源/合成 PDF 生成步骤，不需要个人文件或模型密钥。三项依赖私人课表或早期含预置数据原型的历史测试没有公开，也不计入公开 CI 通过数。测试生成的图片、日志和备份仅用于隔离测试，不应当作为用户数据迁移证据。
+公开 CI 运行 41 个独立回归脚本和资源/合成 PDF 生成步骤，不需要个人文件或模型密钥。三项依赖私人课表或早期含预置数据原型的历史测试没有公开，也不计入公开 CI 通过数。测试生成的图片、日志和备份仅用于隔离测试，不应当作为用户数据迁移证据。
 
 ## 原生开发
 

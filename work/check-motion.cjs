@@ -45,7 +45,9 @@ async function run(){
  }
  await p.screenshot({path:'work/motion-agenda.png',fullPage:true});
  await p.locator('#tide-nav [data-page=timetable]').click();
- await p.waitForFunction(()=>!document.querySelector('.xixu-leaving'));
+  // Week 9 may already be selected. A same-value change need not repaint or
+  // cancel the incoming route animation; settle it before testing controls.
+  await p.waitForFunction(()=>!document.querySelector('.xixu-leaving')&&!document.querySelector('#tide-main .tide-view').getAnimations().some(animation=>animation.playState==='running'||animation.pending));
   await p.getByRole('combobox',{name:'教学周'}).selectOption('9');
   assert.equal(await p.locator('#tide-week-select').inputValue(),'9');
   assert.match(await p.locator('#tide-week-select option:checked').innerText(),/第 9 周/);

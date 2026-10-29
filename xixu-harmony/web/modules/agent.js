@@ -131,6 +131,7 @@ function parseClassPeriods(value){
   }
   function contextualRescheduleQuery(query,conversationId=activeConversationId()){
     const current=normalizeSpokenScheduleText(query),currentDates=parseRescheduleDateInfo(current).dates,hasCourse=Boolean(courseInText(current));
+    if(/\bddl\b|截止|任务|事项|会议|考试|作业|报告|论文/i.test(current)&&!/调课|课表|课程|第?\s*(?:\d{1,4}|[一二三四五六七八九十两]{1,4})\s*节/.test(current))return '';
     if(isRescheduleIntent(current)&&(isScheduleSwapIntent(current)&&currentDates.length>=2||hasCourse&&currentDates.length>=2))return current;
     const history=activeAgentHistory(conversationId),last=history.at(-1);if(last?.role==='assistant'&&/调课|调动|互换|哪一周|第几节|节次|课程名称|原日期|新日期|新时间|核对日期/.test(last.text||'')){
       const prior=[...history].reverse().find(item=>item.role==='user'&&isRescheduleIntent(normalizeSpokenScheduleText(item.text)));
@@ -233,6 +234,47 @@ function parseClassPeriods(value){
     }catch(_){return {answer:'我识别到这是一个 DDL，但日期还不够明确。请告诉我具体哪一天，我就能加入日程。',refs:refs.slice(0,6),action:{type:'none'},source:'local'};}
     return null;
   }
+  // Resolve explicit, single-record commands before either remote read-only
+  // retrieval or model calls. Preparing a command never changes stored records.
+  function localAgentCommand(input){
+    const query=String(input||'').trim(),normalized=normalizeSpokenScheduleText(query);
+    const notePrefix=/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想(?:要)?|我要)\s*)?(?:记下(?:来)?|记住|记(?:一下|下来)|记录(?:一下|下来)|(?:新建|保存|添加)(?:一条|一个)?(?:笔记|备忘录))[\s：:，,]*/.exec(query);
+    if(notePrefix){
+      const text=query.slice(notePrefix[0].length);
+      if(!/[：:]/.test(notePrefix[0])&&!/^(?:请|麻烦|帮我|替我|给我|我想(?:要)?|我要)/.test(query)&&/是什么|什么意思|怎么|如何|为什么|哪里|需要什么/.test(text))return null;
+      if(!text.trim())return {answer:'你想记下什么内容？告诉我正文，我会先给你核对。',refs:[],action:{type:'none'},source:'local'};
+      return {answer:'已整理成一条笔记，请核对内容后确认保存。',refs:[],action:{type:'create_note',title:text.split(/\r?\n/)[0].slice(0,80),text,category:categorizeMemory(text),reason:'根据你明确的记录请求整理；尚未写入'},source:'local'};
+    }
+    if(agentReadQuestion(normalized)||/比较|分析|综合|所有|分别|根据|结合|然后|同时|并且/.test(normalized))return null;
+    const taskPrefix=/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想(?:要)?|我要)\s*)?(?:添加|新增|创建|安排|提醒我)(?:一(?:条|个|项))?(?:任务|日程|事项|提醒)?[\s：:，,]*/.exec(normalized);
+    if(!taskPrefix&&!deadlineIntent(normalized.toLowerCase()))return null;
+    const content=taskPrefix?normalized.slice(taskPrefix[0].length):normalized;
+    if(!content.trim())return {answer:'要安排什么事情、在哪一天？补充后我会先给你核对。',refs:[],action:{type:'none'},source:'local'};
+    const dateInfo=parseRescheduleDateInfo(content);
+    if(dateInfo.ambiguous.length){
+      if(dateInfo.ambiguous.length!==1||dateInfo.dates.length)return {answer:'这项安排出现了多个日期，请只说明本次要添加的那一天，并注明本周、下周或具体日期。',refs:[],action:{type:'none'},source:'local'};
+      const day=dateInfo.ambiguous[0],index='一二三四五六日'.indexOf(day);
+      return {answer:'这件事是安排在本周'+day+'（'+weekDate('本',index)+'）还是下周'+day+'（'+weekDate('下',index)+'）？选择后会保留原事项和时间，继续给你核对。',choices:['本','下'].map(qualifier=>({label:qualifier==='本'?'本周':'下周',value:normalized.replace(/周([一二三四五六日天])/g,(token,weekday,position,text)=>(weekday==='天'?'日':weekday)===day&&!/[本这下上]/.test(text[position-1]||'')?qualifier+token:token)})),refs:[],action:{type:'none'},source:'local'};
+    }
+    if(dateInfo.dates.length>1)return null;
+    try{
+      const item=normalizeAi(localAiPreview(content));
+      if(item.needsClarification)return {answer:item.question||'请补充具体日期，我核对后再加入日程。',refs:[],action:{type:'none'},source:'local'};
+      item.title=item.title.replace(/^(?:上午|中午|下午|晚上)?\s*(?:[01]?\d|2[0-3])[:：][0-5]\d\s*/,'')||types[item.type];
+      if(/(?:本|这|下下|下|上上|上)周/.test(content)&&dateInfo.dates.length===1){item.date=dateInfo.dates[0].date;if(item.type==='task')item.plan=item.date;}
+      if(!validCalendarDate(item.date))return {answer:'这个日期不成立，请核对具体日期；目前没有写入。',refs:[],action:{type:'none'},source:'local'};
+      const hasClock=/(?:^|\D)(?:[01]?\d|2[0-3])[:：][0-5]\d(?:\D|$)|[零一二三四五六七八九十两\d]{1,3}[点时]/.test(content);
+      if(!hasClock&&['meeting','exam'].includes(item.type))return {answer:'已识别到'+item.date+'的“'+item.title+'”。具体是几点？补充时间后我再给你核对；目前没有写入。',refs:[],action:{type:'none'},source:'local'};
+      return {answer:'已整理成“'+item.title+'”。'+(!hasClock&&item.type==='homework'?'未说明具体时刻，暂按当天 23:59 展示，请核对后再确认。':'请核对日期、时间和类型，确认后才会加入日程。'),refs:[],action:{type:'create_task',item,reason:'在本机解析你的明确安排请求；尚未写入'},source:'local'};
+    }catch(_){return {answer:'这个安排的日期或时间还不够明确，请补充后再确认；目前没有写入。',refs:[],action:{type:'none'},source:'local'};}
+  }
+  function agentReadQuestion(text){return /是什么|什么意思|什么时候|几点|多少|几项|怎么|怎样|如何|为什么|哪里|哪儿|能否|是否|需要什么|[?？]|吗\s*$/.test(text);}
+  function agentMutationIntent(query){
+    const text=String(query||'').trim();
+    const explicit=/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想(?:要)?|我要)\s*)?(?:记下|记住|记一下|记录|新建|添加|新增|创建|安排|提醒我|修改|更新|删除|完成|标记|取消|续写|追加|补充)/.test(text)||/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想(?:要)?|我要)\s*)?(?:把|将).*(?:保存|记录|加入|添加|更新|完成|删除|追加|补充|整理进|改到|调到|改成|改为)/.test(text);
+    if(agentReadQuestion(text)&&(!explicit||!/^(?:请|麻烦|帮我|替我|给我|我想(?:要)?|我要)/.test(text)))return false;
+    return explicit||deadlineIntent(text.toLowerCase())||isRescheduleIntent(text);
+  }
   const agentTaskTypeLabels={homework:'作业',exam:'考试',meeting:'会议',task:'事项'};
   const agentPeriodValue=periods=>Array.isArray(periods)&&periods.length?(periods.length===1?String(periods[0]):periods[0]+'-'+periods.at(-1)):'';
   function parseAgentPeriods(value){
@@ -266,7 +308,8 @@ function parseClassPeriods(value){
     const title=action.title||task?.title||note?.title||targetCourse?.name||'此事项';
     const labels={create_note:'创建笔记',complete_task:'完成任务',append_note:'续写笔记',delete_task:'删除任务',delete_note:'删除笔记',delete_course:'删除课程及其排课',plan_task:'安排 '+action.estimateMinutes+' 分钟学习时间'};
     const label=(labels[action.type]||'更新')+' “'+esc(title)+'”';
-    return '<div class="xixu-agent-action '+(action.risk?'is-risk':'')+'"><span>'+icon(action.risk?'triangle-alert':'check-circle-2')+(action.risk?'确认删除':'核对操作')+'</span><strong>'+label+'</strong>'+(action.reason?'<small>'+esc(action.reason)+'</small>':'')+'<div class="tide-detail-actions"><button class="tide-secondary" data-action="agent-dismiss">暂不处理</button><button class="'+(action.risk?'tide-delete':'tide-primary')+'" data-action="agent-confirm">'+(action.risk?'确认删除':'确认操作')+'</button></div></div>';
+    const notePreview=action.type==='create_note'?'<pre class="xixu-agent-note-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;margin:0">'+esc(action.text)+'</pre>':'';
+    return '<div class="xixu-agent-action '+(action.risk?'is-risk':'')+'"><span>'+icon(action.risk?'triangle-alert':'check-circle-2')+(action.risk?'确认删除':'核对操作')+'</span><strong>'+label+'</strong>'+notePreview+(action.reason?'<small>'+esc(action.reason)+'</small>':'')+'<div class="tide-detail-actions"><button class="tide-secondary" data-action="agent-dismiss">暂不处理</button><button class="'+(action.risk?'tide-delete':'tide-primary')+'" data-action="agent-confirm">'+(action.risk?'确认删除':'确认操作')+'</button></div></div>';
   }
   function localAgentResult(query,refs,conversationId=activeConversationId()){
     const reschedule=localRescheduleAction(query,refs,conversationId);if(reschedule)return reschedule;
@@ -358,7 +401,7 @@ function parseClassPeriods(value){
     if(event.target.id!=='xixu-agent-form')return;event.preventDefault();if(agentPending){notify('上一条消息还在回复中，你可以先写在草稿里');return}
     const original=String(new FormData(event.target).get('question')||''),query=original.trim();if(!query)return;
     if(query.length>AGENT_MESSAGE_MAX_CHARS){agentInputDraft=original;saveAgentInput();persist();notify('内容完整保留在草稿中。这条消息较长，请拆成几次发送，或先保存为笔记再检索。');return}
-    const conversationId=activeConversationId(),scheduleQuery=contextualRescheduleQuery(query,conversationId),localSchedule=scheduleQuery?localRescheduleAction(query,[],conversationId):null,now=new Date().toISOString();
+    const conversationId=activeConversationId(),scheduleQuery=contextualRescheduleQuery(query,conversationId),localSchedule=scheduleQuery?localRescheduleAction(query,[],conversationId):null,localCommand=scheduleQuery?null:localAgentCommand(query),writeIntent=agentMutationIntent(query),now=new Date().toISOString();
     agentPendingHistoryId='';if(agentEditingId){const index=agentHistory.findIndex(item=>item.id===agentEditingId&&String(item.conversationId||'default')===conversationId);if(index>=0){agentHistory[index].text=query;if(agentHistory[index+1]?.role==='assistant'&&String(agentHistory[index+1].conversationId||'default')===conversationId)agentHistory.splice(index+1,1);agentPendingHistoryId=agentEditingId}agentEditingId=''}
     const userId=agentPendingHistoryId||uid();if(!agentPendingHistoryId)agentHistory.push({id:userId,conversationId,role:'user',text:query,source:'local',createdAt:now});
     agentInputDraft='';saveAgentInput();agentConversationMetadata()[conversationId]={...agentPreferences.conversations[conversationId],createdAt:agentPreferences.conversations[conversationId]?.createdAt||now,updatedAt:now};
@@ -366,17 +409,18 @@ function parseClassPeriods(value){
     requestAnimationFrame(()=>{const scroll=main.querySelector('.xixu-agent-chat-scroll');if(scroll)scroll.scrollTop=scroll.scrollHeight});
     try{
       if(scheduleQuery){setTimeout(()=>finishAgent(query,localSchedule||localAgentResult(query,[],conversationId),request),80);return}
+      if(localCommand){setTimeout(()=>finishAgent(query,localCommand,request),80);return}
       if(typeof prepareAgentRagIndex==='function')await prepareAgentRagIndex();
       if(request!==agentRequest)return;
       const retrievalQuery=typeof contextualAgentRagQuery==='function'?contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId):query;
       const refs=semanticAgentSearch(retrievalQuery);request.refs=refs;request.stage='thinking';const resultDraft=agentConversationResults.get(conversationId);if(resultDraft)resultDraft.refs=refs;if(activeConversationId()===conversationId)agentDraft=resultDraft;render(false);
-      if(typeof knowledgeAnswer==='function'&&knowledgeStatus().paired){
+      if(!writeIntent&&typeof knowledgeAnswer==='function'&&knowledgeStatus().paired){
         try{const remote=await knowledgeAnswer(query,refs,conversationId);if(request!==agentRequest)return;if(remote){finishAgent(query,remote,request);return}}
         catch(error){if(request!==agentRequest)return;notify('电脑知识库未完成：'+error.message+'；继续使用手机助手。')}
       }
       if(window.XixuAI&&aiHasKey()){
-        agentRequestActive=true;if(!window.XixuAI.analyze(agentPayload(query,refs,conversationId))){agentRequestActive=false;finishAgent(query,localAgentResult(query,refs,conversationId),request)}
-      }else {const result=localAgentResult(query,refs,conversationId);setTimeout(()=>finishAgent(query,result,request),80)}
+        agentRequestActive=true;if(!window.XixuAI.analyze(agentPayload(query,refs,conversationId))){agentRequestActive=false;finishAgent(query,writeIntent?{answer:'目前还不能准确整理这个修改请求。请补充要修改的资料标题和具体内容；这次没有修改任何数据。',refs:refs.slice(0,6),action:{type:'none'},source:'local'}:localAgentResult(query,refs,conversationId),request)}
+      }else {const result=writeIntent?{answer:'这个修改还需要更具体的资料标题、内容或联网解析。你可以直接说“记下：正文”或“添加任务：明天做什么”；目前没有写入。',refs:refs.slice(0,6),action:{type:'none'},source:'local'}:localAgentResult(query,refs,conversationId);setTimeout(()=>finishAgent(query,result,request),80)}
     }catch(error){finishAgent(query,{answer:'资料检索暂时没有完成，这次没有修改任何内容。请稍后重试。',refs:[],action:{type:'none'},source:'local'},request);notify(error.message||'资料检索没有完成')}
   });
   let agentDraftSaveTimer;

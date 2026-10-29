@@ -19,11 +19,31 @@
     const busy=workloadDays()[0];if(!busy)return '';
     return '<button class="xixu-workload" data-action="search-prefill" data-query="'+esc(busy.date)+'">'+icon('triangle-alert')+'<span><strong>'+esc(dateLabel(busy.date)+'任务较集中')+'</strong><small>'+busy.items.length+' 项截止'+(busy.minutes?'，预计 '+Math.ceil(busy.minutes/60)+' 小时':'')+'，建议提前安排</small></span>'+icon('chevron-right')+'</button>';
   }
+  function plannerTimeMinute(value,allowDayEnd=false){
+    const match=String(value||'').trim().match(/^(\d{1,2}):(\d{2})$/);if(!match)return NaN;
+    const hour=Number(match[1]),minute=Number(match[2]);
+    return minute<60&&(hour<24||(allowDayEnd&&hour===24&&minute===0))?hour*60+minute:NaN;
+  }
   function busyIntervals(date,excludeTaskId){
-    const day=dayIndexOf(date),weekNo=teachingWeekOf(date),values=[];
-    if(weekNo>=1&&weekNo<=20)lessons.filter(l=>l.day===day&&l.weeks.includes(weekNo)).forEach(l=>values.push([minuteOf(lessonStart(l)),minuteOf(lessonEnd(l))]));
-    tasks.forEach(t=>{if(t.id===excludeTaskId)return;(t.sessions||[]).filter(s=>s.date===date&&!s.done).forEach(s=>values.push([minuteOf(s.time),minuteOf(s.time)+Number(s.minutes||0)]));if(t.type==='task'&&!t.done&&t.date===date&&t.time)values.push([minuteOf(t.time),minuteOf(t.time)+60])});
-    return values.sort((a,b)=>a[0]-b[0]);
+    const values=[],append=(start,end)=>{
+      if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||end<=start)return;
+      const from=Math.max(0,start),to=Math.min(1440,end);if(to>from)values.push([from,to]);
+    };
+    lessonsOnDate(date,{includeRescheduledOut:false}).forEach(({lesson})=>append(plannerTimeMinute(lessonStart(lesson)),plannerTimeMinute(lessonEnd(lesson),true)));
+    tasks.forEach(t=>{
+      if((excludeTaskId!=null&&t.id===excludeTaskId)||t.done)return;
+      (Array.isArray(t.sessions)?t.sessions:[]).filter(s=>s&&s.date===date&&!s.done).forEach(s=>{
+        const start=plannerTimeMinute(s.time),minutes=Number(s.minutes);if(Number.isFinite(minutes)&&minutes>0)append(start,start+minutes);
+      });
+      // Until explicit event end times exist, use the same conservative one-hour
+      // estimate as ordinary tasks. A homework deadline is a point, not a slot.
+      if(['task','meeting','exam'].includes(t.type)&&t.date===date){const start=plannerTimeMinute(t.time);append(start,start+60)}
+    });
+    const merged=[];
+    values.sort((a,b)=>a[0]-b[0]||a[1]-b[1]).forEach(([start,end])=>{
+      const previous=merged.at(-1);if(previous&&start<previous[1])previous[1]=Math.max(previous[1],end);else merged.push([start,end]);
+    });
+    return merged;
   }
   function freeSegments(date,excludeTaskId){
     const windows=[[540,720],[840,1080],[1140,1320]],busy=busyIntervals(date,excludeTaskId),result=[];
@@ -71,6 +91,8 @@
     if(!task)return top('自动安排')+empty('这条事项已经不存在。');
     const estimate=Number(task.estimateMinutes)||120;if(!plannerDraft||plannerDraft.taskId!==task.id)plannerDraft=proposeSessions(task,estimate);
     let html=top('自动安排')+'<div class="xixu-planner-hero">'+icon('calendar-range')+'<div><small>截止 '+esc(dateLabel(task.date)+' '+(task.time||'23:59'))+'</small><strong>'+esc(task.title)+'</strong><span>预计 '+Math.round(estimate/60*10)/10+' 小时</span></div></div>';
+    const planningEnd=String(task.date||addDays(DEMO_DAY,14)),lastPlanningDate=planningEnd<addDays(DEMO_DAY,119)?planningEnd:addDays(DEMO_DAY,119);
+    if(tasks.some(item=>item.id!==task.id&&!item.done&&['meeting','exam'].includes(item.type)&&item.date>=DEMO_DAY&&item.date<=lastPlanningDate&&Number.isFinite(plannerTimeMinute(item.time))))html+='<div class="tide-note">未设置结束时间的会议/考试暂按1小时占用，请核对。</div>';
     if(plannerDraft.sessions.length)html+='<div class="xixu-session-list">'+plannerDraft.sessions.map((s,i)=>'<div><span>'+esc(dateLabel(s.date)+' '+weekday(s.date))+'</span><strong>'+s.time+' · '+s.minutes+' 分钟</strong><button data-action="remove-plan-session" data-index="'+i+'" aria-label="移除这一段">'+icon('x')+'</button></div>').join('')+'</div>';
     if(plannerDraft.remaining>0)html+='<div class="tide-note">截止前的可用空档不足，还剩 '+plannerDraft.remaining+' 分钟未安排。可以先保存现有安排，再调整课程或任务。</div>';
     html+='<div class="tide-detail-actions"><button class="tide-secondary" data-action="rebuild-plan" data-id="'+esc(task.id)+'">'+icon('refresh-cw')+'重新计算</button><button class="tide-primary" data-action="confirm-plan" data-id="'+esc(task.id)+'" '+(!plannerDraft.sessions.length?'disabled':'')+'>'+icon('check')+'写入计划</button></div><div class="xixu-local-note">'+icon('shield-check')+'确认后才会写入；以后课表或日程冲突时可重新安排。</div>';
