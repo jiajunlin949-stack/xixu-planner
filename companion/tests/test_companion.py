@@ -2,8 +2,6 @@ import base64
 import hashlib
 import json
 import sqlite3
-import os
-import time
 from zipfile import ZipFile
 
 import pytest
@@ -16,7 +14,6 @@ from xixu_hub.note_sync import Conflict, NoteSync
 from xixu_hub.originals import Originals
 from xixu_hub.store import Store
 from xixu_hub.vectors import Retriever, ChromaStore, MilvusStore
-from xixu_hub.export_folders import ExportFolders
 
 TOKEN = 'synthetic-owner-token-no-real-credentials-123'
 AUTH = {'Authorization': 'Bearer ' + TOKEN}
@@ -365,40 +362,3 @@ def test_note_api_complete_chunk_contract_and_excerpt_version_guard(tmp_path):
                           params={'version': '0' * 64, 'start': 0, 'end': 5}).status_code == 422
 
 
-def test_export_folder_incremental_updates_disable_and_no_delete_on_missing_file(tmp_path):
-    folder = tmp_path / 'exports'
-    folder.mkdir()
-    file = folder / '合成.json'
-    file.write_bytes(encoded([message()]))
-    os.utime(file, (time.time() - 10, time.time() - 10))
-    store = Store(tmp_path / 'service' / 'db.sqlite3')
-    originals = Originals(tmp_path / 'service' / 'originals')
-    manager = ExportFolders(store, originals, Retriever(store, tmp_path, False))
-    identifier = manager.add('qq', str(folder))
-    assert manager.sync(identifier)['changed'] == 1
-    assert manager.sync(identifier)['changed'] == 0
-    file.write_bytes(encoded([message(text='合成更新后的原文')]))
-    os.utime(file, (time.time() - 10, time.time() - 10))
-    assert manager.sync(identifier)['changed'] == 1 and store.stats()['documents'] == 1
-    file.unlink()
-    assert manager.sync(identifier)['changed'] == 0 and store.stats()['documents'] == 1
-    manager.disable(identifier)
-    assert manager.sync(identifier)['status'] == 'disabled'
-
-
-def test_unparseable_export_keeps_previous_records_and_directories_are_opt_in(tmp_path):
-    app = create_app(tmp_path / 'data', token=TOKEN)
-    folder = tmp_path / 'exports'
-    folder.mkdir()
-    file = folder / '合成.json'
-    file.write_bytes(encoded([message()]))
-    os.utime(file, (time.time() - 10, time.time() - 10))
-    identifier = app.state.exports.add('dingtalk', str(folder))
-    assert app.state.exports.sync(identifier)['changed'] == 1
-    file.write_bytes(b'{broken')
-    os.utime(file, (time.time() - 10, time.time() - 10))
-    assert app.state.exports.sync(identifier)['unparsed_files'] == 1
-    assert app.state.store.stats()['documents'] == 1
-    with pytest.raises(ValueError):
-        app.state.exports.add('qq', 'relative-folder')
-    assert len(app.state.exports.list()) == 1

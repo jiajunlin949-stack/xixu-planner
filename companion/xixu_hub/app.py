@@ -5,8 +5,6 @@ import secrets
 import threading
 import time
 import uuid
-import asyncio
-from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +22,6 @@ from .originals import Originals, MAX_FILE
 from .security import Devices
 from .store import Store
 from .vectors import Retriever
-from .export_folders import ExportFolders
 
 
 class Body(BaseModel):
@@ -85,14 +82,6 @@ class ModelSettings(Body):
     max_output_tokens: int = Field(default=1800, ge=256, le=4096)
 
 
-class ExportFolderBody(Body):
-    platform: Literal['qq', 'dingtalk', 'wechat']
-    path: str = Field(min_length=1, max_length=1500)
-    conversation_name: str = Field(default='', max_length=200)
-    account_id: str = Field(default='', max_length=200)
-    confirmed: Literal[True]
-
-
 def owner_token(directory):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / 'access.token'
@@ -118,21 +107,9 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
     sync = NoteSync(store, originals)
     retriever = Retriever(store, directory / 'models', semantic, backend)
     model = ModelClient(settings)
-    exports = ExportFolders(store, originals, retriever)
-    @asynccontextmanager
-    async def lifespan(application):
-        worker = asyncio.create_task(exports.loop()) if not device_only and mode == 'extended' else None
-        try:
-            yield
-        finally:
-            if worker:
-                worker.cancel()
-                with suppress(asyncio.CancelledError):
-                    await worker
-    app = FastAPI(title='汐序个人知识库', version='0.3.0', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title='汐序个人知识库', version='0.3.0', docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.devices, app.state.sync = store, devices, sync
     app.state.originals, app.state.retriever, app.state.model = originals, retriever, model
-    app.state.exports = exports
     tickets, import_lock = {}, threading.RLock()
 
     @app.middleware('http')
@@ -340,23 +317,5 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
             raise HTTPException(404, '原件不存在。')
         originals.read(key)
         return FileResponse(originals.path(key), filename=key + '.original', media_type='application/octet-stream')
-
-    @app.get('/v1/connectors/export-folders', dependencies=[Depends(owner)])
-    def list_export_folders():
-        return {'sources': [{**source, 'state': {key: value for key, value in source['state'].items() if key != 'fingerprints'}} for source in exports.list()]}
-
-    @app.post('/v1/connectors/export-folders', dependencies=[Depends(owner)])
-    def add_export_folder(body: ExportFolderBody):
-        if mode != 'extended':
-            raise HTTPException(409, '当前纯备忘录服务模式未启用聊天目录。')
-        return {'id': exports.add(body.platform, body.path, body.conversation_name, body.account_id)}
-
-    @app.post('/v1/connectors/export-folders/{identifier}/sync', dependencies=[Depends(owner)])
-    def sync_export_folder(identifier: str):
-        return exports.sync(identifier)
-
-    @app.delete('/v1/connectors/export-folders/{identifier}', dependencies=[Depends(owner)])
-    def disable_export_folder(identifier: str):
-        return exports.disable(identifier)
 
     return app
