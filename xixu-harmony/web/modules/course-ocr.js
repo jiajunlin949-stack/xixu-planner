@@ -487,7 +487,7 @@
     if(aiButton){
       if(!window.XixuAI?.hasKey?.()){openPanel({kind:'ai-settings'});notify('请先保存并测试 DeepSeek 密钥，再回来检查课表。');return}
       if(!ocrImageDataUrl||ocrVisionPending)return;ocrVisionPending=true;const box=main.querySelector('#xixu-ocr-review');if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 正在检查原图');icons();
-      try{if(!window.XixuAI.analyzeVision(timetableVisionPayload(ocrImageDataUrl))){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查请求未发送。')}}catch(_){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查连接失败。');}
+      try{if(!assistantLegacyModelRequest(timetableVisionPayload(ocrImageDataUrl),'XixuReceiveTimetableAI')){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查请求未发送。')}}catch(_){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查连接失败。');}
       return;
     }
     if(event.target.closest('[data-action="confirm-timetable"]')&&importCandidate&&!storageBlocked){

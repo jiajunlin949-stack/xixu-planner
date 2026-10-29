@@ -1,8 +1,8 @@
 import { webview } from '@kit.ArkWeb';
 import { http } from '@kit.NetworkKit';
-import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { SecureRecords } from './SecureRecords';
 
 interface PairBundle { version: number; server: string; ca: string; code: string; }
 interface DeviceConfig { server: string; ca: string; token: string; deviceId: string; }
@@ -12,20 +12,20 @@ interface ExcerptQuery { document_id: string; version: string; start: number; en
 // Only this native bridge holds the phone credential. Web backups cannot read it.
 export class KnowledgeBridge {
   private controller: webview.WebviewController;
-  private encoder: util.TextEncoder = new util.TextEncoder();
-  private decoder: util.TextDecoder = new util.TextDecoder();
-  private alias: Uint8Array = this.encoder.encodeInto('xixu.knowledge.device-v1');
+  private flights: Map<string, http.HttpRequest> = new Map();
+  private base64: util.Base64Helper = new util.Base64Helper();
+  private records: SecureRecords = new SecureRecords();
+  private ends: Map<string, () => void> = new Map();
 
   constructor(controller: webview.WebviewController) { this.controller = controller; }
+  cancel(id: string): boolean { const request = this.flights.get(id); if (!request) { return false; } this.flights.delete(id); this.ends.get(id)?.(); this.ends.delete(id); request.destroy(); return true; }
+  close(): void { Array.from(this.flights.keys()).forEach((id: string) => { this.cancel(id); }); }
+  private streamReply(id: string, type: string, body: string): void { this.controller.runJavaScript('window.XixuReceiveKnowledgeStream && window.XixuReceiveKnowledgeStream(' + JSON.stringify(id) + ',' + JSON.stringify(type) + ',' + JSON.stringify(body) + ')').catch(() => {}); }
 
   private read(): DeviceConfig | undefined {
     try {
-      const query: asset.AssetMap = new Map();
-      query.set(asset.Tag.ALIAS, this.alias);
-      query.set(asset.Tag.RETURN_TYPE, asset.ReturnType.ALL);
-      const rows = asset.querySync(query);
-      if (!rows.length) { return undefined; }
-      return JSON.parse(this.decoder.decodeToString(rows[0].get(asset.Tag.SECRET) as Uint8Array)) as DeviceConfig;
+      const value: string = this.records.read('xixu.knowledge.device-v1');
+      return value ? JSON.parse(value) as DeviceConfig : undefined;
     } catch (_) { return undefined; }
   }
 
@@ -35,8 +35,9 @@ export class KnowledgeBridge {
   }
 
   disconnect(): boolean {
+    this.close();
     try {
-      const query: asset.AssetMap = new Map(); query.set(asset.Tag.ALIAS, this.alias); asset.removeSync(query);
+      this.records.remove('xixu.knowledge.device-v1');
     } catch (_) {}
     return this.read() === undefined;
   }
@@ -60,13 +61,15 @@ export class KnowledgeBridge {
     const syncOperation: boolean = ['sync-status', 'sync-begin', 'sync-note', 'sync-asset', 'sync-commit'].includes(operation);
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || payload.length > (syncOperation ? 300000 : 22000)) { return false; }
     if (deviceInfo.sdkApiVersion < 20) { this.reply(id, false, '电脑知识库连接需要 HarmonyOS API 20 或以上版本。'); return true; }
-    if (!['pair', 'health', 'search', 'chat', 'excerpt'].includes(operation) && !syncOperation) { return false; }
+    if (!['pair', 'health', 'search', 'chat', 'excerpt', 'chat-prepare', 'chat-confirm', 'chat-stream', 'suggestions'].includes(operation) && !syncOperation) { return false; }
+    if (this.flights.has(id) || this.flights.size >= 4) { return false; }
     this.request(id, operation, payload);
     return true;
   }
 
   private async request(id: string, operation: string, payload: string): Promise<void> {
     const request = http.createHttp();
+    this.flights.set(id, request);
     try {
       let config = this.read();
       let path: string = '/v1/health';
@@ -81,6 +84,10 @@ export class KnowledgeBridge {
         config = { server: bundle.server, ca: bundle.ca, token: '', deviceId: '' };
         path = '/v1/devices/pair'; body = JSON.stringify({ code: bundle.code, name: '汐序鸿蒙手机' });
         method = http.RequestMethod.POST;
+      } else if (operation === 'chat-prepare' || operation === 'chat-confirm' || operation === 'chat-stream') {
+        path = '/v1/chat/' + (operation === 'chat-prepare' ? 'prepare' : operation === 'chat-stream' ? 'stream' : 'confirm'); body = payload; method = http.RequestMethod.POST;
+      } else if (operation === 'suggestions') {
+        path = '/v1/suggestions';
       } else if (operation === 'search' || operation === 'chat') {
         path = '/v1/' + operation; body = payload; method = http.RequestMethod.POST;
       } else if (operation === 'sync-status') {
@@ -97,10 +104,19 @@ export class KnowledgeBridge {
         path = '/v1/sources/' + query.document_id + '/excerpt?version=' + query.version + '&start=' + query.start + '&end=' + query.end;
       }
       if (!config || !this.validServer(config.server)) { throw new Error('请先在设置中配对电脑知识库。'); }
+      if (operation === 'chat-stream') {
+        let received: number = 0;
+        const ended: Promise<void> = new Promise((resolve) => { this.ends.set(id, resolve); request.on('dataEnd', () => { resolve(); }); });
+        request.on('dataReceive', (chunk: ArrayBuffer) => { if (!this.flights.has(id)) { return; } received += chunk.byteLength; if (received > 4 * 1024 * 1024) { this.cancel(id); this.streamReply(id, 'error', '回答超过容量'); return; } this.streamReply(id, 'chunk', this.base64.encodeToStringSync(new Uint8Array(chunk))); });
+        const code: number = await request.requestInStream(config.server + path, { method: http.RequestMethod.POST, header: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token }, extraData: body, caData: config.ca, connectTimeout: 10000, readTimeout: 120000, usingCache: false });
+        await ended;
+        if (this.flights.has(id)) { this.streamReply(id, code >= 200 && code < 300 ? 'end' : 'error', code >= 200 && code < 300 ? '' : '电脑返回 HTTP ' + String(code)); }
+        return;
+      }
       const response = await request.request(config.server + path, {
         method: method, header: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token },
         extraData: body, caData: config.ca, expectDataType: http.HttpDataType.STRING,
-        connectTimeout: 10000, readTimeout: operation === 'chat' ? 120000 : 30000, usingCache: false
+        connectTimeout: 10000, readTimeout: operation === 'chat' || operation === 'chat-confirm' ? 120000 : 30000, usingCache: false
       });
       const status: number = Number(response.responseCode);
       const text: string = String(response.result);
@@ -116,17 +132,14 @@ export class KnowledgeBridge {
         const paired = JSON.parse(text) as PairResult;
         if (!paired.token || paired.token.length < 32) { throw new Error('配对响应无效。'); }
         config.token = paired.token; config.deviceId = paired.device_id;
-        const attributes: asset.AssetMap = new Map();
-        attributes.set(asset.Tag.ALIAS, this.alias);
-        attributes.set(asset.Tag.SECRET, this.encoder.encodeInto(JSON.stringify(config)));
-        attributes.set(asset.Tag.ACCESSIBILITY, asset.Accessibility.DEVICE_FIRST_UNLOCKED);
-        attributes.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
-        asset.addSync(attributes);
+        this.records.write('xixu.knowledge.device-v1', JSON.stringify(config));
         this.reply(id, true, '{"paired":true}');
       } else { this.reply(id, true, text); }
     } catch (error) {
+      if (!this.flights.has(id)) { return; }
       const detail: string = error instanceof Error ? error.message : '';
-      this.reply(id, false, detail && !/\d{6,}/.test(detail) ? detail : '连接未完成，请检查同一网络、电脑运行状态与防火墙。');
-    } finally { request.destroy(); }
+      if (operation === 'chat-stream') { this.streamReply(id, 'error', '电脑连接中断，请重新核对后发送。'); }
+      else { this.reply(id, false, detail && !/\d{6,}/.test(detail) ? detail : '连接未完成，请检查同一网络、电脑运行状态与防火墙。'); }
+    } finally { this.ends.delete(id); this.flights.delete(id); request.destroy(); }
   }
 }

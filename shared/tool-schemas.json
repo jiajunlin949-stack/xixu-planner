@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "create_event",
+      "description": "准备创建会议、考试或截止事项；返回预览，确认后才写入",
+      "readOnly": false,
+      "requiresConfirmation": true,
+      "inputSchema": {
+        "type": "object", "additionalProperties": false,
+        "required": ["title", "date", "time", "type"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 100},
+          "date": {"type": "string", "format": "date"},
+          "time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+          "type": {"type": "string", "enum": ["homework", "exam", "meeting"]},
+          "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+          "course_name": {"type": "string", "maxLength": 80},
+          "note": {"type": "string", "maxLength": 1000}
+        }
+      }
+    },
+    {
+      "name": "create_todo",
+      "description": "准备创建普通待办；时间可留空，确认后才写入",
+      "readOnly": false, "requiresConfirmation": true,
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["title", "date"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 100},
+          "date": {"type": "string", "format": "date"},
+          "time": {"type": "string", "pattern": "^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+          "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+          "course_name": {"type": "string", "maxLength": 80},
+          "note": {"type": "string", "maxLength": 1000}
+        }
+      }
+    },
+    {
+      "name": "update_event", "description": "准备修改已核对来源的事项；必须有真实任务编号与版本，不能直接执行",
+      "readOnly": false, "requiresConfirmation": true,
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["task_id"],
+        "properties": {
+          "task_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "title": {"type": "string", "minLength": 1, "maxLength": 100},
+          "date": {"type": "string", "format": "date"},
+          "time": {"type": "string", "pattern": "^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+          "duration_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+          "note": {"type": "string", "maxLength": 1000}
+        }
+      }
+    },
+    {
+      "name": "search_notes", "description": "只读查找本机笔记并返回带来源的片段，不修改资料",
+      "readOnly": true, "requiresConfirmation": false,
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["query"],
+        "properties": {
+          "query": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+          "date_from": {"type": "string", "format": "date"},
+          "date_to": {"type": "string", "format": "date"}
+        }
+      }
+    },
+    {
+      "name": "get_schedule", "description": "只读查询实际日期课程、事项与截止压力，显式区分硬占用和截止点",
+      "readOnly": true, "requiresConfirmation": false,
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["date"],
+        "properties": {
+          "date": {"type": "string", "format": "date"},
+          "start_time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+          "end_time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+          "exclude_task_id": {"type": "string", "maxLength": 128}
+        }
+      }
+    }
+  ]
+}

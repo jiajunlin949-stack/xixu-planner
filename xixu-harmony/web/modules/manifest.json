@@ -9,5 +9,11 @@
   "rag.js",
   "knowledge.js",
   "knowledge-sync.js",
-  "agent.js"
+  "agent.js",
+  "shared-contracts.js",
+  "routing-policy.js",
+  "assistant-core.js",
+  "assistant-intelligence.js",
+  "assistant-network.js",
+  "full-backup.js"
 ]

@@ -37,7 +37,7 @@
       });
       // Until explicit event end times exist, use the same conservative one-hour
       // estimate as ordinary tasks. A homework deadline is a point, not a slot.
-      if(['task','meeting','exam'].includes(t.type)&&t.date===date){const start=plannerTimeMinute(t.time);append(start,start+60)}
+      if(['task','meeting','exam'].includes(t.type)&&t.date===date){const start=plannerTimeMinute(t.time);append(start,start+(Number(t.durationMinutes)||60))}
     });
     const merged=[];
     values.sort((a,b)=>a[0]-b[0]||a[1]-b[1]).forEach(([start,end])=>{
@@ -363,7 +363,7 @@
         await verifyNoteArchiveSources(chosen);if(generation!==noteImportGeneration)throw Error('导入已取消');
         const now=new Date().toISOString(),added=chosen.map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:normalizeAttachments(item.images),createdAt:String(item.createdAt??''),updatedAt:String(item.updatedAt??''),importedAt:now,...(item.archive?{archive:item.archive}:{}),...(item.sourceFileModifiedAt?{sourceFileModifiedAt:item.sourceFileModifiedAt}:{})})),oldNotes=notes,oldSaved=lastSaved;
         notes=[...notes,...added];try{const value=JSON.stringify(checkData(snapshot(),false));storageWrite(value);lastSaved=value;saveError.hidden=true}catch(error){notes=oldNotes;lastSaved=oldSaved;throw Error('笔记索引未保存，原有资料未替换；请检查可用空间')}
-        noteImportDraft=[];noteImportError='';panel=null;previousPanel=null;page='notes';render(false);notify('已导入 '+added.length+' 条笔记');
+        noteImportDraft=[];noteImportError='';panel=null;previousPanel=null;page='notes';render(false);notify('已导入 '+added.length+' 条笔记');if(typeof assistantMineRecords==='function')assistantMineRecords(assistantSourceRecords().filter(record=>added.some(item=>'note:'+item.id===record.id)));
       }catch(error){notify(error.message);if(button.isConnected)button.disabled=false}finally{if(generation===noteImportGeneration)noteImportBusy=false}
     }
   });

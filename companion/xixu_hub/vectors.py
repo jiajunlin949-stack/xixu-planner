@@ -164,8 +164,9 @@ class Retriever:
                 self.last_error = '向量索引尚未就绪，请检查所选数据库和本地 Embedding 模型；原文仍保留，可继续文字检索。'
                 return {'enabled': True, 'backend': self.backend, 'error': self.last_error}
 
-    def search(self, query, limit=6):
-        lexical, dense, semantic_ok = self.store.lexical(query), [], False
+    def search(self, query, limit=5):
+        from .intelligence import expand_query, rerank, temporal_evidence
+        lexical, dense, semantic_ok = self.store.lexical(expand_query(query)), [], False
         if self.enabled:
             with self.lock:
                 try:
@@ -180,20 +181,26 @@ class Retriever:
         for ranking in [lexical, dense]:
             for rank, chunk_id in enumerate(dict.fromkeys(ranking), 1):
                 scores[chunk_id] = scores.get(chunk_id, 0) + 1 / (60 + rank)
-        rows = self.store.resolve(list(scores))
-        selected, per_doc, budget = [], {}, 0
-        for chunk_id in sorted(scores, key=lambda key: (-scores[key], key)):
-            row = rows.get(chunk_id)
-            if not row or per_doc.get(row['document_id'], 0) >= 2 or budget + len(row['text']) > 5000:
+        ordered_ids = sorted(scores, key=lambda key: (-scores[key], key))
+        rows = self.store.resolve(ordered_ids)
+        candidate_ids, candidate_docs = [], {}
+        for key in ordered_ids:
+            row = rows.get(key)
+            if not row or candidate_docs.get(row['document_id'], 0) >= 4:
                 continue
+            candidate_ids.append(key)
+            candidate_docs[row['document_id']] = candidate_docs.get(row['document_id'], 0) + 1
+            if len(candidate_ids) == 20:
+                break
+        ranked = rerank(query, [rows[key] for key in candidate_ids if key in rows], scores, limit)
+        selected = []
+        for row in ranked:
             metadata = json.loads(row['metadata'])
             public_metadata = {key: metadata[key] for key in ('source_type', 'sender_id', 'sender_name', 'conversation_id', 'conversation_name', 'sent_at', 'sent_at_local', 'sent_at_unix', 'is_group', 'original_hash', 'note_id', 'source_created_at', 'source_updated_at', 'source_imported_at') if key in metadata}
-            selected.append({**row, 'score': scores[chunk_id], 'metadata': public_metadata,
+            selected.append({**row, 'score': row['rerank_score'], 'metadata': public_metadata,
                              'source_type': metadata.get('source_type', 'file'), 'record_type': 'external'})
-            per_doc[row['document_id']] = per_doc.get(row['document_id'], 0) + 1
-            budget += len(row['text'])
-            if len(selected) >= limit:
-                break
-        return {'results': selected, 'strategy': 'rrf-lexical-semantic' if semantic_ok else 'lexical',
+        return {'results': selected, 'strategy': 'rrf-lightweight-rerank' if semantic_ok else 'lexical-lightweight-rerank',
+                'ranking': {'fused_candidates': len(candidate_ids), 'selected': len(selected), 'reranker': 'token-coverage-title-v1', 'scores_are_probabilities': False},
+                'temporal': temporal_evidence(selected),
                 'semantic_available': semantic_ok, 'backend': self.backend, 'warning': self.last_error,
                 'answer_generated': False}

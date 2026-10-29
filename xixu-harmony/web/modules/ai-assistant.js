@@ -1,7 +1,7 @@
   let aiCandidate=null,aiPending=false,aiTestState='untested',aiTestMessage='';
-  const aiHasKey=()=>{try{return Boolean(window.XixuAI?.hasKey?.())}catch(_){return false}};
+  const aiHasKey=()=>{try{return window.XixuModels?Boolean(JSON.parse(window.XixuModels.publicConfig()).key_configured):Boolean(window.XixuAI?.hasKey?.())}catch(_){return false}};
   function renderSmartInput(){
-    const status=window.XixuAI?(aiHasKey()?'本机整理简单请求，DeepSeek 处理复杂请求':'简单请求可离线完成；填写 DeepSeek Key 可处理更多内容。'):'简单请求可直接在本机完成';
+    const status=window.XixuAI?(aiHasKey()?'本机整理简单请求，已配置模型处理复杂请求':'简单请求可离线完成；配置模型后可处理更多内容。'):'简单请求可直接在本机完成';
     let html=top('智能速记')+'<div class="xixu-ai-hero">'+icon('sparkles')+'<div><strong>现在想记下什么？</strong><span>先核对内容，确认后再保存。</span></div></div><form id="xixu-smart-form" class="tide-form"><label class="tide-field">描述你的安排<textarea name="sentence" required maxlength="500" placeholder="告诉汐序你想记住或安排什么……"></textarea></label><button class="tide-primary tide-full" type="submit" '+(aiPending?'disabled':'')+'>'+icon(aiPending?'loader-circle':'wand-sparkles')+(aiPending?'正在整理……':'帮我整理')+'</button></form><div class="xixu-ai-status">'+icon(window.XixuAI&&aiHasKey()?'shield-check':'info')+'<span>'+esc(status)+'</span></div><div id="xixu-ai-result">';
     if(aiCandidate)html+=renderAiCandidate(aiCandidate);
     html+='</div><button class="tide-link tide-full" data-action="manual-add">'+icon('pencil-line')+'自己添加</button>';
@@ -93,7 +93,7 @@
   root.addEventListener('submit',event=>{
     if(event.target.id==='xixu-smart-form'){
       event.preventDefault();const text=String(new FormData(event.target).get('sentence')||'').trim();if(!text)return;aiPending=true;render();
-       if(window.XixuAI&&aiHasKey()){if(!window.XixuAI.analyze(aiPayload(text))){aiPending=false;render();notify('请求没有开始，请重试。')}}
+       if(window.XixuModels&&aiHasKey()){if(!assistantLegacyModelRequest(aiPayload(text),'XixuReceiveAI')){aiPending=false;render();notify('请求没有开始，请重试。')}}
       else {setTimeout(()=>{try{aiCandidate=normalizeAi(localAiPreview(text))}catch(error){notify(error.message)}aiPending=false;render()},180)}
     } else if(event.target.id==='xixu-ai-key-form'){
        event.preventDefault();const key=String(new FormData(event.target).get('apiKey')||'').trim();if(key.length<12){notify('请输入完整的 API Key。');return}waitForNativeBridge('XixuAI').then(bridge=>{try{if(bridge?.saveKey?.(key)){aiTestState='untested';aiTestMessage='Key 已安全保存，正在测试连接……';render();notify('DeepSeek Key 已安全保存');testAiConnection()}else notify('安全存储尚未连接，请重新打开最新版本的汐序。')}catch(_){notify('Key 没有保存成功，请重新打开汐序后重试。')}});

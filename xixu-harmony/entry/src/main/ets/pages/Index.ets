@@ -12,6 +12,8 @@ import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { consumeStartupRoute, registerStartupRouteHandler, setStartupRoute, unregisterStartupRouteHandler } from '../common/StartupRoute';
 import { NoteArchive } from '../common/NoteArchive';
 import { KnowledgeBridge } from '../common/KnowledgeBridge';
+import { ModelGateway } from '../common/ModelGateway';
+import { BackupBridge } from '../common/BackupBridge';
 
 // Git experiment: first modification of Index.ets
 interface ReminderTask {
@@ -254,19 +256,12 @@ class DeepSeekBridge {
   }
 
   analyze(payload: string): boolean {
-    if (!payload || payload.length > 32 * 1024) { return false; }
-    const key = this.readKey();
-    if (!key) { this.reply('XixuReceiveAI', false, 401, '请先在设置中添加 DeepSeek API Key。'); return false; }
-    this.request(payload, key, 'XixuReceiveAI');
-    return true;
+    // Private material must pass the shared preview gateway. Legacy callers fail closed.
+    return false;
   }
 
   analyzeVision(payload: string): boolean {
-    if (!payload || payload.length > 44 * 1024 * 1024) { return false; }
-    const key = this.readKey();
-    if (!key) { this.reply('XixuReceiveTimetableAI', false, 401, '请先在设置中添加 DeepSeek API Key。'); return false; }
-    this.request(payload, key, 'XixuReceiveTimetableAI');
-    return true;
+    return false;
   }
 
   testConnection(): boolean {
@@ -581,6 +576,8 @@ struct Index {
   private bridgesRegistered: boolean = false;
   private storage: LocalStore = new LocalStore();
   private ai: DeepSeekBridge = new DeepSeekBridge(this.controller);
+  private models: ModelGateway = new ModelGateway(this.controller);
+  private backups: BackupBridge = new BackupBridge(this.controller);
   private knowledge: KnowledgeBridge = new KnowledgeBridge(this.controller);
   private ocr: OcrBridge = new OcrBridge(this.controller);
   private reminders: ReminderBridge = new ReminderBridge(this.controller);
@@ -602,7 +599,9 @@ struct Index {
     try {
       this.controller.registerJavaScriptProxy(this.storage, 'XixuStore', ['read', 'save', 'cloudStatus']);
       this.controller.registerJavaScriptProxy(this.ai, 'XixuAI', ['hasKey', 'saveKey', 'deleteKey', 'analyze', 'analyzeVision', 'testConnection']);
-      this.controller.registerJavaScriptProxy(this.knowledge, 'XixuKnowledge', ['status', 'call', 'disconnect']);
+      this.controller.registerJavaScriptProxy(this.models, 'XixuModels', ['publicConfig', 'save', 'start', 'cancel']);
+      this.controller.registerJavaScriptProxy(this.knowledge, 'XixuKnowledge', ['status', 'call', 'disconnect', 'cancel']);
+      this.controller.registerJavaScriptProxy(this.backups, 'XixuBackup', ['beginWrite', 'writeChunk', 'save', 'choose', 'readRange', 'close']);
       this.controller.registerJavaScriptProxy(this.ocr, 'XixuOCR', ['status', 'recognize', 'recognizeAssessment', 'recognizeAssistant', 'recognizeDocumentPage']);
       this.controller.registerJavaScriptProxy(this.reminders, 'XixuReminder', ['status', 'enable', 'sync']);
       this.controller.registerJavaScriptProxy(this.files, 'XixuFile', ['begin', 'readChunk', 'finish']);
@@ -629,6 +628,7 @@ struct Index {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.storage.initialize(context.filesDir, context.cloudFileDir);
     this.archive.initialize(context);
+    this.backups.initialize(context);
     this.reminders.initialize(context);
     this.browser.initialize(context);
     this.ocr.initialize();
@@ -636,7 +636,7 @@ struct Index {
     setTimeout(() => { this.applyStartupRoute(); }, 400);
   }
 
-  aboutToDisappear(): void { unregisterStartupRouteHandler(); this.files.finish(); this.archive.close(); this.ocr.release(); }
+  aboutToDisappear(): void { unregisterStartupRouteHandler(); this.files.finish(); this.archive.close(); this.models.close(); this.knowledge.close(); this.backups.close(); this.ocr.release(); }
 
   build() {
     Column() {

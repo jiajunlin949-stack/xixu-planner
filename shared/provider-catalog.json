@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "providers": [
+    {"id":"deepseek","label":"DeepSeek","base_url":"https://api.deepseek.com","api":"chat","model":"deepseek-flash"},
+    {"id":"qwen","label":"通义千问","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","api":"chat","model":"qwen-plus"},
+    {"id":"kimi","label":"Kimi","base_url":"https://api.moonshot.cn/v1","api":"chat","model":""},
+    {"id":"doubao","label":"豆包 / 火山方舟","base_url":"https://ark.cn-beijing.volces.com/api/v3","api":"chat","model":""},
+    {"id":"openai","label":"OpenAI","base_url":"https://api.openai.com/v1","api":"responses","model":""},
+    {"id":"gemini","label":"Gemini（兼容接口）","base_url":"https://generativelanguage.googleapis.com/v1beta/openai","api":"chat","model":""},
+    {"id":"claude","label":"Claude","base_url":"https://api.anthropic.com/v1","api":"messages","model":""},
+    {"id":"custom","label":"自定义 HTTPS 接口","base_url":"","api":"chat","model":""}
+  ],
+  "defaultCapabilities":{"stream":true,"structured":false,"vision":false,"tools":false,"reasoning":false},
+  "notice":"配置入口和协议适配不等于所有模型均已验证。模型名称及能力以所选模型官方说明为准。密钥不包含在清单或资料备份中。"
+}

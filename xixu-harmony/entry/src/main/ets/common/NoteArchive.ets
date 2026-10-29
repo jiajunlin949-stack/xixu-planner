@@ -103,7 +103,7 @@ export class NoteArchive {
           if (!count || fs.writeSync(output.fd, buffer, { length: count }) !== count) { throw new Error('导出不完整'); }
           copied += count;
         }
-        fs.fsyncSync(output.fd); this.reply(true, '原始 HTML 已导出，请保留作为图文备份');
+        fs.fsyncSync(output.fd); this.reply(true, '原始文档已导出，请保留作为图文备份');
       } catch (_) { this.reply(false, '原件导出未完成，请重试；本机原件未修改'); }
       finally { if (input) { fs.closeSync(input.fd); } if (output) { fs.closeSync(output.fd); } }
     }).catch(() => { this.reply(false, '未取得保存权限，原件未修改'); });

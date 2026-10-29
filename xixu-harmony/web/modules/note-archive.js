@@ -196,6 +196,6 @@
       const now=new Date().toISOString(),added=chosen.map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:[],createdAt:'',updatedAt:'',importedAt:now,archive:{version:1,originalHash:item.originalHash,fileName:item.fileName,fileBytes:item.fileBytes,textHash:item.textHash,images:item.images,layout:item.layout}}));
       const oldNotes=notes,oldSaved=lastSaved;notes=[...notes,...added];
       try{const value=JSON.stringify(checkData(snapshot(),false));storageWrite(value);lastSaved=value;saveError.hidden=true}catch(error){notes=oldNotes;lastSaved=oldSaved;throw Error('笔记索引未保存，原有资料未替换；请检查本机容量')}
-      archiveDraft=[];panel=null;previousPanel=null;page='notes';archiveBusy=false;render(false);notify('已导入 '+added.length+' 条图文；源编辑时间未知');
+      archiveDraft=[];panel=null;previousPanel=null;page='notes';archiveBusy=false;render(false);notify('已导入 '+added.length+' 条图文；源编辑时间未知');if(typeof assistantMineRecords==='function')assistantMineRecords(assistantSourceRecords().filter(record=>added.some(item=>'note:'+item.id===record.id)));
     }catch(error){archiveBusy=false;notify(error.message);if(submit.isConnected)submit.disabled=false}
   },true);
