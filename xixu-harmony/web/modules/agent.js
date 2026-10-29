@@ -414,7 +414,7 @@ function parseClassPeriods(value){
       if(request!==agentRequest)return;
       const retrievalQuery=typeof contextualAgentRagQuery==='function'?contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId):query;
       const refs=semanticAgentSearch(retrievalQuery);request.refs=refs;request.stage='thinking';const resultDraft=agentConversationResults.get(conversationId);if(resultDraft)resultDraft.refs=refs;if(activeConversationId()===conversationId)agentDraft=resultDraft;render(false);
-      if(!writeIntent&&typeof knowledgeAnswer==='function'&&knowledgeStatus().paired){
+      if(!writeIntent&&typeof knowledgeAnswer==='function'&&knowledgeEnabled()){
         try{const remote=await knowledgeAnswer(query,refs,conversationId);if(request!==agentRequest)return;if(remote){finishAgent(query,remote,request);return}}
         catch(error){if(request!==agentRequest)return;notify('电脑知识库未完成：'+error.message+'；继续使用手机助手。')}
       }

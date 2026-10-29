@@ -1,6 +1,8 @@
   const knowledgePending=new Map();
   let knowledgeSequence=0,knowledgeMessage='';
   function knowledgeStatus(){try{return JSON.parse(window.XixuKnowledge?.status?.()||'{}')}catch(_){return {paired:false}}}
+  function knowledgeMode(){try{const saved=localStorage.getItem('xixu-knowledge-mode');if(['local','extended'].includes(saved))return saved}catch(_){}return knowledgeStatus().paired?'extended':'local'}
+  function knowledgeEnabled(){return knowledgeMode()==='extended'&&knowledgeStatus().paired}
   function knowledgeCall(operation,payload={}){
     return new Promise((resolve,reject)=>{
       const id='knowledge_'+Date.now()+'_'+(++knowledgeSequence);
@@ -25,7 +27,7 @@
     }));
   }
   async function knowledgeAnswer(query,refs,conversationId){
-    if(!knowledgeStatus().paired)return null;
+    if(!knowledgeEnabled())return null;
     let room=4800;const local=[];
     for(const ref of refs.slice(0,2)){const text='汐序本机资料：'+ref.title+'\n'+String(ref.text||'');const clipped=text.slice(0,Math.min(1200,room));if(clipped){local.push(clipped);room-=clipped.length}}
     let result;
@@ -41,7 +43,8 @@
   }
   function knowledgeSettingsHtml(){
     const status=knowledgeStatus();
-    return '<div class="tide-section"><h2>电脑知识库</h2></div><div class="tide-surface"><p>'+esc(status.paired?'已配对：'+status.server:'尚未配对电脑')+'</p><p>在电脑知识库中生成连接信息，复制到这里。电脑与手机需要在可互通的网络中。</p>'+(knowledgeMessage?'<p role="status">'+esc(knowledgeMessage)+'</p>':'')+'<form id="xixu-knowledge-pair" class="tide-form"><label class="tide-field">电脑连接信息<textarea name="bundle" required maxlength="12000" rows="4" placeholder="粘贴电脑生成的完整连接信息"></textarea></label><button class="tide-primary tide-full">配对电脑</button></form>'+(status.paired?'<button class="tide-secondary tide-full" data-action="knowledge-test">测试电脑连接</button><button class="tide-delete tide-full" data-action="knowledge-disconnect">断开电脑连接</button>':'')+'<p>配对后，问答会把本次选中的手机资料发送到电脑；电脑配置模型后，会把相关片段发送给该模型。电脑关机时会提示连接失败，再尝试手机原有助手。</p></div>';
+    const local=knowledgeMode()==='local';
+    return '<div class="tide-section"><h2>知识库模式</h2></div><div class="tide-surface"><div class="tide-detail-actions"><button class="'+(local?'tide-primary':'tide-secondary')+'" data-action="knowledge-mode-local" aria-pressed="'+local+'">本机备忘录</button><button class="'+(!local?'tide-primary':'tide-secondary')+'" data-action="knowledge-mode-extended" aria-pressed="'+(!local)+'">电脑扩展</button></div><p>'+ (local?'记录、导入和检索都可在手机本机完成，电脑关机也能使用。':'把个人电脑里已导入的聊天和工作资料一起用于查询，需要电脑在线。')+'</p>'+(knowledgeMessage?'<p role="status">'+esc(knowledgeMessage)+'</p>':'')+(local?'':'<p>'+esc(status.paired?'已配对：'+status.server:'尚未配对电脑')+'</p><form id="xixu-knowledge-pair" class="tide-form"><label class="tide-field">电脑连接信息<textarea name="bundle" required maxlength="12000" rows="4" placeholder="粘贴电脑生成的完整连接信息"></textarea></label><button class="tide-primary tide-full">配对电脑</button></form>'+(status.paired?'<button class="tide-secondary tide-full" data-action="knowledge-test">测试电脑连接</button><button class="tide-secondary tide-full" data-action="knowledge-sync-preview">同步备忘录与原件</button><button class="tide-delete tide-full" data-action="knowledge-disconnect">断开电脑连接</button>':'')+'<p>查询会发送本次选中的手机片段；完整笔记与原件只在你确认同步后发送到配对电脑。电脑配置回答模型后，相关片段会按设置发送给该模型。</p>')+'</div>'+(typeof knowledgeSyncHtml==='function'?knowledgeSyncHtml():'');
   }
   const settingsBeforeKnowledge=renderSettings;
   renderSettings=function(){return settingsBeforeKnowledge()+knowledgeSettingsHtml()};
@@ -54,7 +57,10 @@
   });
   root.addEventListener('click',async event=>{
     const button=event.target.closest('[data-action]'),action=button?.dataset.action;
-    if(action==='knowledge-test'){
+    if(action==='knowledge-mode-local'||action==='knowledge-mode-extended'){
+      if(typeof cancelKnowledgeSync==='function'&&cancelKnowledgeSync()===false)return;
+      try{localStorage.setItem('xixu-knowledge-mode',action==='knowledge-mode-local'?'local':'extended');knowledgeMessage='';render()}catch(_){notify('模式未能保存，请检查本机存储')}
+    }else if(action==='knowledge-test'){
       try{const result=await knowledgeCall('health');knowledgeMessage='电脑可访问，已有 '+result.documents+' 份资料。'+(result.answer_model_configured?'电脑已保存模型密钥，是否可用以电脑连接测试为准。':'电脑尚未配置回答模型。')}
       catch(error){knowledgeMessage=error.message}render();
     }else if(action==='knowledge-disconnect'){

@@ -86,7 +86,8 @@ export class NoteArchive {
     const source: string = this.path(key);
     const options = new picker.DocumentSaveOptions();
     const safeName: string = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
-    options.newFileNames = [safeName.length > 180 ? safeName.slice(0, 175) + '.html' : safeName];
+    const suffix: string = safeName.includes('.') ? safeName.slice(safeName.lastIndexOf('.')).slice(0, 12) : '';
+    options.newFileNames = [safeName.length > 180 ? safeName.slice(0, 180 - suffix.length) + suffix : safeName];
     new picker.DocumentViewPicker(this.context).save(options).then((uris: string[]) => {
       if (!uris.length) { this.reply(false, '已取消导出，原件仍在本机'); return; }
       let input: fs.File | undefined = undefined;

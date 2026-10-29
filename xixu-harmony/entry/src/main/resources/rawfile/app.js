@@ -690,10 +690,11 @@
   }
   function validNoteArchive(value){
     if(value===undefined)return true;
-    if(!value||value.version!==1||!/^[a-f0-9]{64}$/.test(value.originalHash)||!/^[a-f0-9]{64}$/.test(value.textHash)||typeof value.fileName!=='string'||!value.fileName||value.fileName.length>1000||!Number.isInteger(value.fileBytes)||value.fileBytes<1||value.fileBytes>20*1024*1024||!Array.isArray(value.images)||value.images.length>500||!Array.isArray(value.layout)||value.layout.length>10000)return false;
+    if(!value||![1,2].includes(value.version)||!/^[a-f0-9]{64}$/.test(value.originalHash)||!/^[a-f0-9]{64}$/.test(value.textHash)||typeof value.fileName!=='string'||!value.fileName||value.fileName.length>1000||!Number.isInteger(value.fileBytes)||value.fileBytes<1||value.fileBytes>20*1024*1024||!Array.isArray(value.images)||value.images.length>500||!Array.isArray(value.layout)||value.layout.length>10000)return false;
+    if(value.version===2&&(!['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp'].includes(value.format)||!Array.isArray(value.warnings)||value.warnings.length>40||value.warnings.some(text=>typeof text!=='string'||text.length>500)))return false;
     if(value.images.some(image=>!image||!/^[a-f0-9]{64}$/.test(image.hash)||!['image/jpeg','image/png','image/webp'].includes(image.mime)||!Number.isInteger(image.bytes)||image.bytes<1||image.bytes>20*1024*1024))return false;
     if(value.images.some(image=>image.width!==undefined&&(!Number.isFinite(image.width)||!Number.isFinite(image.height)||image.width<=0||image.height<=0||image.width>100000||image.height>100000)))return false;
-    if(value.images.reduce((sum,image)=>sum+image.bytes,0)>value.fileBytes)return false;
+    if(value.images.reduce((sum,image)=>sum+image.bytes,0)>(value.version===1?value.fileBytes:64*1024*1024))return false;
     let depth=0,characters=0,imageIndex=0;
     for(const item of value.layout){
       if(!item||!['text','break','open','close','image','checkbox'].includes(item.kind))return false;
@@ -1816,7 +1817,7 @@
     return preferred?String(preferred):String(((!base||/^(note|notes|备忘录|新建备忘录|未命名)(?:[-_ ]?\d+)?$/i.test(base))?first:base)||first||'导入的笔记').slice(0,80);
   }
   function jsonNotes(value,fileName,lastModified,result=[]){
-    if(result.length>=500)return result;
+    if(result.length>=500)throw Error('每个 JSON 最多 500 条笔记，未截取或导入');
     if(Array.isArray(value)){value.forEach(item=>jsonNotes(item,fileName,lastModified,result));return result}
     if(!value||typeof value!=='object')return result;
     for(const key of ['notes','items','records','data']){if(Array.isArray(value[key])){jsonNotes(value[key],fileName,lastModified,result);return result}}
@@ -1827,39 +1828,46 @@
     }
     return result;
   }
-  async function notesFromFile(file){
-    const extension=(file.name.split('.').pop()||'').toLowerCase(),sourceFileModifiedAt=file.lastModified?new Date(file.lastModified).toISOString():'',updatedAt='',createdAt='';
-    if(/^(png|jpe?g|webp)$/.test(extension)){
-      if(file.size>10*1024*1024)throw Error('“'+file.name+'” 超过 10 MB');
-      const dataUrl=await compactAttachmentImage(await fileDataUrl(file));if(dataUrl.length>2500000)throw Error('“'+file.name+'” 压缩后仍然过大');
-      return [{title:titleFromFile(file.name,''),text:'',createdAt,updatedAt,sourceFileModifiedAt,images:[{id:uid(),name:String(file.name||'导入的图片').slice(0,120),type:'image/jpeg',dataUrl}]}];
+  async function notesFromFile(file,index,selection){
+    const extension=(file.name.split('.').pop()||'').toLowerCase(),sourceFileModifiedAt=file.lastModified?new Date(file.lastModified).toISOString():'',bytes=await archiveSelectedBytes(file,index,selection);
+    selection.totalBytes=(selection.totalBytes||0)+bytes.length;if(selection.totalBytes>25*1024*1024)throw Error('所选文件实际总大小超过 25 MiB，未截断或新增笔记');
+    if(extension==='json'){
+      let value;try{value=JSON.parse(documentText(bytes))}catch(_){throw Error('“'+file.name+'” 不是有效的 JSON 文件')}
+      const items=jsonNotes(value,file.name,sourceFileModifiedAt),originalHash=await archiveSha(bytes);await archiveStore(bytes,originalHash);
+      for(const item of items){if(item.text.length>50000)throw Error('JSON 中有笔记超过 50000 字符，未截断导入');item.archive={version:2,format:'json',fileName:file.name,fileBytes:bytes.length,originalHash,textHash:await archiveSha(new TextEncoder().encode(item.text)),images:[],layout:[{kind:'text',text:item.text}],warnings:['此条是 JSON 的文字投影；完整 JSON 原文件可从本条导出。']}}
+      return items;
     }
-    if(file.size>5*1024*1024)throw Error('“'+file.name+'” 超过 5 MB');
-    const raw=decodeNoteFile(await file.arrayBuffer());
-    if(extension==='html'||extension==='htm'){const parsed=htmlNote(raw);return parsed.text?[{title:titleFromFile(file.name,parsed.text,parsed.title),text:parsed.text,createdAt,updatedAt,sourceFileModifiedAt}]:[]}
-    if(extension==='json'){let parsed;try{parsed=JSON.parse(raw)}catch(_){throw Error('“'+file.name+'” 不是有效的 JSON 文件')}return jsonNotes(parsed,file.name,sourceFileModifiedAt)}
-    const text=raw;return text.trim()?[{title:titleFromFile(file.name,text),text,createdAt,updatedAt,sourceFileModifiedAt}]:[];
+    const parsed=await parseArchiveDocument(bytes,file.name),archive=await archiveDocumentProjection(parsed,bytes);
+    return [{title:parsed.title,text:parsed.text,images:[],createdAt:parsed.createdAt||'',updatedAt:parsed.updatedAt||'',sourceFileModifiedAt,archive}];
   }
   async function prepareNoteImport(fileList){
+    if(noteImportBusy)return;
     const files=Array.from(fileList||[]);noteImportError='';noteImportDraft=[];
     if(!files.length)return;if(files.length>500){notify('一次最多选择 500 个文件。');return}
     if(files.reduce((sum,file)=>sum+file.size,0)>25*1024*1024){notify('所选文件总大小不能超过 25 MB。');return}
-    const allowed=/\.(txt|md|markdown|html?|json|png|jpe?g|webp)$/i,unsupported=files.filter(file=>!allowed.test(file.name));
-    if(unsupported.length){notify('请选择 TXT、Markdown、HTML、JSON 或图片文件。');return}
+    const allowed=/\.(txt|md|markdown|csv|html?|json|docx|pdf|png|jpe?g|webp)$/i,unsupported=files.filter(file=>!allowed.test(file.name));
+    if(unsupported.length){notify('支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和图片；hdoc、旧版 DOC 暂未支持。');return}
+    const selection={},generation=++noteImportGeneration;noteImportBusy=true;openPanel({kind:'note-import'});
     try{
-      const signature=item=>(item.title+'\n'+item.text+'\n'+normalizeAttachments(item.images).map(image=>image.dataUrl.length+':'+image.dataUrl.slice(-80)).join('|')).trim().replace(/\s+/g,' ').toLowerCase();
-      const groups=await Promise.all(files.map(notesFromFile)),existing=new Set(notes.map(signature)),within=new Set();
-      noteImportDraft=groups.flat().filter(item=>item.text||normalizeAttachments(item.images).length).slice(0,5000).map((item,index)=>{const key=signature(item),duplicate=existing.has(key)||within.has(key);within.add(key);return {...item,index,duplicate}});
+      if(storageBlocked)throw Error('本机资料读取异常，未导入');
+      const signature=item=>item.archive?item.archive.originalHash+'\n'+item.archive.fileName+'\n'+item.title+'\n'+item.text:item.title+'\n'+item.text;
+      const groups=[];for(let index=0;index<files.length;index++){if(generation!==noteImportGeneration)return;groups.push(await notesFromFile(files[index],index,selection));await archiveYield()}
+      if(generation!==noteImportGeneration)return;
+      const items=groups.flat().filter(item=>item.text||noteImageCount(item));if(items.length+notes.length>5000)throw Error('导入后会超过 5000 条笔记，未截断或新增');
+      const existing=new Set(notes.map(signature)),within=new Set();
+      noteImportDraft=items.map((item,index)=>{const key=signature(item),duplicate=existing.has(key)||within.has(key);within.add(key);return {...item,index,duplicate}});
       if(!noteImportDraft.length){notify('这些文件中没有找到可导入的笔记或图片。');return}
       openPanel({kind:'note-import'});
-    }catch(error){noteImportError=String(error?.message||error||'无法读取这些文件');openPanel({kind:'note-import'})}
+    }catch(error){if(generation===noteImportGeneration){noteImportDraft=[];noteImportError=String(error?.message||error||'无法读取这些文件');openPanel({kind:'note-import'})}}
+    finally{if(window.XixuFile&&selection.id!==undefined)window.XixuFile.finish(selection.id);if(generation===noteImportGeneration){noteImportBusy=false;if(panel?.kind==='note-import')render(false)}}
   }
   function renderNoteImport(){
-    if(noteImportError)return top('导入笔记')+'<div class="tide-note warm">'+esc(noteImportError)+'</div><button class="tide-primary tide-full" data-action="pick-note-import">重新选择文件</button><input id="xixu-note-import-files" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.json,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/html,application/json,image/png,image/jpeg,image/webp" hidden>';
+    if(noteImportBusy)return top('读取文档')+'<p class="tide-note" role="status">正在核对文字、图片和原文件…确认前不会加入备忘录。可以返回取消。</p>';
+    if(noteImportError)return top('导入笔记')+'<div class="tide-note warm" role="alert">'+esc(noteImportError)+'</div><button class="tide-primary tide-full" data-action="pick-note-import">重新选择文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>';
     const available=noteImportDraft.filter(item=>!item.duplicate).length,duplicates=noteImportDraft.length-available;
-    return top('核对笔记导入')+'<div class="xixu-import-summary"><strong>'+available+' 条待导入</strong><span>'+(duplicates?duplicates+' 条重复，已自动跳过':'没有发现重复')+'</span></div><form id="xixu-note-import-review" class="xixu-note-import-list">'+noteImportDraft.map((item,index)=>'<label class="'+(item.duplicate?'is-duplicate':'')+'"><input type="checkbox" name="noteImport" value="'+index+'" '+(item.duplicate?'disabled':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+(item.duplicate?'已有相同笔记':'作为未关联笔记导入')+'</small><em>'+esc(item.text?item.text.replace(/\s+/g,' ').slice(0,100):normalizeAttachments(item.images).length+' 张图片')+'</em></span></label>').join('')+'<div class="tide-detail-actions"><button class="tide-secondary" type="button" data-action="pick-note-import">重新选择</button><button class="tide-primary" type="submit" '+(!available?'disabled':'')+'>导入选中内容</button></div></form><input id="xixu-note-import-files" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.json,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/html,application/json,image/png,image/jpeg,image/webp" hidden><div class="tide-note">导入的笔记会保存到汐序，不会修改或删除华为备忘录中的笔记。</div>';
+    return top('核对笔记导入')+'<div class="xixu-import-summary"><strong>'+available+' 条待导入</strong><span>'+(duplicates?duplicates+' 条重复，已自动跳过':'没有发现重复')+'</span></div><div class="tide-note">原文件已在本机暂存并核对哈希，确认后才加入笔记。文字与图文视图用于阅读和检索，不代表完全重建原文档的排版。</div><form id="xixu-note-import-review" class="xixu-note-import-list">'+noteImportDraft.map((item,index)=>'<label class="'+(item.duplicate?'is-duplicate':'')+'"><input type="checkbox" name="noteImport" value="'+index+'" '+(item.duplicate?'disabled':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+(item.duplicate?'已有相同原件':noteImageCount(item)+' 张图片 · 保留原件')+'</small><em>'+esc(item.text?item.text.replace(/\s+/g,' ').slice(0,100):noteImageCount(item)+' 张图片')+'</em>'+(item.archive?.warnings||[]).map(text=>'<small>'+esc(text)+'</small>').join('')+'</span></label>').join('')+'<div class="tide-detail-actions"><button class="tide-secondary" type="button" data-action="pick-note-import">重新选择</button><button class="tide-primary" type="submit" '+(!available?'disabled':'')+'>导入选中内容</button></div></form><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden><div class="tide-note">不会修改或删除原文件。请同时备份原件；JSON 索引备份不包含独立原件。</div>';
   }
-  function renderNoteImportHelp(){return top('导入笔记文件')+'<div class="tide-note">支持 TXT、Markdown、HTML、JSON 和图片文件。保存前可以预览内容、跳过重复笔记，再把选中的内容保存到汐序。</div><button class="tide-primary tide-full" data-action="pick-note-import">选择笔记文件</button><input id="xixu-note-import-files" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.json,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/html,application/json,image/png,image/jpeg,image/webp" hidden>'}
+  function renderNoteImportHelp(){return top('导入笔记文件')+'<div class="tide-note">支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和 PNG/JPEG/WebP。单个原件最多 20 MiB、每批最多 25 MiB；PDF 最多 50 页。保存前核对提取结果，原文件完整保留。hdoc 和旧版 DOC 尚未解码。</div><button class="tide-primary tide-full" data-action="pick-note-import">选择笔记文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>'}
 
   const baseImportReview=importReviewHtml;importReviewHtml=function(label){
     return baseImportReview(label);
@@ -1918,7 +1926,7 @@
     if(event.target.id!=='xixu-note-course-relation')return;
     const picker=main.querySelector('#xixu-note-course-picker');if(picker)picker.hidden=event.target.value!=='linked';
   });
-  root.addEventListener('submit',event=>{
+  root.addEventListener('submit',async event=>{
     if(event.target.id==='tide-form'){
       const data=new FormData(event.target),editingId=String(data.get('editingId')||''),minutes=Number(data.get('estimateMinutes')||0);
       setTimeout(()=>{const task=editingId?getTask(editingId):tasks.slice().reverse().find(t=>t.title===String(data.get('title')).trim()&&t.date===String(data.get('date')));if(task){task.estimateMinutes=minutes;if(!Array.isArray(task.sessions))task.sessions=[];persist()}},0);
@@ -1940,7 +1948,15 @@
       if(contentChanged){if(existing)notes[notes.indexOf(existing)]=note;else notes.push(note)}
       clearTimeout(noteDraftTimer);noteEditorDraft=null;try{localStorage.removeItem('xixu-note-editor-draft')}catch(_){}noteImageDraft=[];noteImageDraftKey='';panel=null;previousPanel=null;page='notes';if(contentChanged)queueDelightCue('note-saved',{id:note.id,from});render();notify(!contentChanged?'内容未变，上次编辑时间保持不变':existing?'笔记已更新':'笔记已保存');
     }else if(event.target.id==='xixu-note-import-review'){
-      event.preventDefault();const selected=new Set(new FormData(event.target).getAll('noteImport').map(Number)),now=new Date().toISOString(),added=noteImportDraft.filter((item,index)=>selected.has(index)&&!item.duplicate).map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:normalizeAttachments(item.images),createdAt:String(item.createdAt??''),updatedAt:String(item.updatedAt??''),importedAt:now,...(item.sourceFileModifiedAt?{sourceFileModifiedAt:item.sourceFileModifiedAt}:{})}));if(!added.length){notify('至少选择一条笔记');return}notes.push(...added);noteImportDraft=[];noteImportError='';panel=null;previousPanel=null;page='notes';render();notify('已导入 '+added.length+' 条笔记');
+      event.preventDefault();if(noteImportBusy)return;const selected=new Set(new FormData(event.target).getAll('noteImport').map(Number)),chosen=noteImportDraft.filter((item,index)=>selected.has(index)&&!item.duplicate);if(!chosen.length){notify('至少选择一条笔记');return}
+      const generation=++noteImportGeneration;noteImportBusy=true;const button=event.target.querySelector('[type="submit"]');button.disabled=true;
+      try{
+        if(storageBlocked)throw Error('本机资料读取异常，未写入');
+        await verifyNoteArchiveSources(chosen);if(generation!==noteImportGeneration)throw Error('导入已取消');
+        const now=new Date().toISOString(),added=chosen.map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:normalizeAttachments(item.images),createdAt:String(item.createdAt??''),updatedAt:String(item.updatedAt??''),importedAt:now,...(item.archive?{archive:item.archive}:{}),...(item.sourceFileModifiedAt?{sourceFileModifiedAt:item.sourceFileModifiedAt}:{})})),oldNotes=notes,oldSaved=lastSaved;
+        notes=[...notes,...added];try{const value=JSON.stringify(checkData(snapshot(),false));storageWrite(value);lastSaved=value;saveError.hidden=true}catch(error){notes=oldNotes;lastSaved=oldSaved;throw Error('笔记索引未保存，原有资料未替换；请检查可用空间')}
+        noteImportDraft=[];noteImportError='';panel=null;previousPanel=null;page='notes';render(false);notify('已导入 '+added.length+' 条笔记');
+      }catch(error){notify(error.message);if(button.isConnected)button.disabled=false}finally{if(generation===noteImportGeneration)noteImportBusy=false}
     }
   });
 
@@ -2014,11 +2030,11 @@
   async function archiveSelectedBytes(file,index,selection){
     if(window.XixuFile){
       const info=JSON.parse(window.XixuFile.begin(index));if(selection.id!==undefined&&info.selectionId!==selection.id)throw Error('文件选择已变化，请重新选择');if(info.selectionId!==undefined)selection.id=info.selectionId;
-      const size=Number(info.size);if(!Number.isInteger(size)||size<1||size>ARCHIVE_FILE_LIMIT)throw Error('单个 HTML 必须小于等于 20 MiB');
+      const size=Number(info.size);if(!Number.isInteger(size)||size<1||size>ARCHIVE_FILE_LIMIT)throw Error('单个原文件必须小于等于 20 MiB');
       const bytes=new Uint8Array(size);let offset=0;
       while(offset<size){const chunk=archiveUnbase64(window.XixuFile.readChunk(256*1024));if(!chunk.length||offset+chunk.length>size)throw Error('文件读取不完整，未导入');bytes.set(chunk,offset);offset+=chunk.length;await archiveYield()}return bytes;
     }
-    if(!file.size||file.size>ARCHIVE_FILE_LIMIT)throw Error('单个 HTML 必须小于等于 20 MiB');return new Uint8Array(await file.arrayBuffer());
+    if(!file.size||file.size>ARCHIVE_FILE_LIMIT)throw Error('单个原文件必须小于等于 20 MiB');return new Uint8Array(await file.arrayBuffer());
   }
   async function parseArchiveHtml(bytes,fileName){
     let raw;
@@ -2091,7 +2107,8 @@
     const note=notes.find(item=>item.id===id);if(!note?.archive||panel?.editArchive)return memoryWithoutArchive(id);
     const archive=note.archive;
     const addedImages=normalizeAttachments(note.images);
-    return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。</div><article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article><p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">导出原始 HTML</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
+    const originalLabel=archive.version===2?'导出原文件':'导出原始 HTML',notice=archive.version===2?'保留原始 '+esc(archive.format.toUpperCase())+' 文件与 '+archive.images.length+' 张阅读图片。文字视图用于检索，原文档版式以原文件为准。':'保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。';
+    return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">'+notice+'</div>'+(archive.warnings||[]).map(text=>'<p class="tide-note">'+esc(text)+'</p>').join('')+'<article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article><p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">'+originalLabel+'</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
   };
   async function hydrateNoteArchive(){
     const article=main.querySelector('.xixu-archive-content');
@@ -2127,7 +2144,7 @@
     try{
       await archiveRead(note.archive.originalHash);
       if(window.XixuArchive){if(!window.XixuArchive.exportFile(note.archive.originalHash,note.archive.fileName))throw Error('没有取得原件导出权限')}
-      else{const bytes=await archiveRead(note.archive.originalHash),url=URL.createObjectURL(new Blob([bytes],{type:'text/html'})),link=document.createElement('a');link.href=url;link.download=note.archive.fileName;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+      else{const bytes=await archiveRead(note.archive.originalHash),url=URL.createObjectURL(new Blob([bytes],{type:documentMime(note.archive.fileName)})),link=document.createElement('a');link.href=url;link.download=note.archive.fileName;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
     }catch(error){notify(error.message)}
   },true);
   root.addEventListener('submit',async event=>{
@@ -2144,6 +2161,133 @@
       archiveDraft=[];panel=null;previousPanel=null;page='notes';archiveBusy=false;render(false);notify('已导入 '+added.length+' 条图文；源编辑时间未知');
     }catch(error){archiveBusy=false;notify(error.message);if(submit.isConnected)submit.disabled=false}
   },true);
+
+  // Document projections are for reading/search. The exact input bytes remain
+  // in the content-addressed archive and are exported without re-encoding.
+  const DOCUMENT_FORMATS=['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp'];
+  const NOTE_IMPORT_ACCEPT='.txt,.md,.markdown,.csv,.html,.htm,.json,.docx,.pdf,.png,.jpg,.jpeg,.webp';
+  let noteImportBusy=false,noteImportGeneration=0;
+  const DOCUMENT_IMAGE_BUDGET=64*1024*1024;
+  function documentMime(name){
+    const ext=String(name).split('.').pop().toLowerCase();
+    return ({pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',html:'text/html',htm:'text/html',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',json:'application/json'})[ext]||'text/plain';
+  }
+  function documentText(bytes){
+    let text;
+    try{text=new TextDecoder(bytes[0]===255&&bytes[1]===254?'utf-16le':bytes[0]===254&&bytes[1]===255?'utf-16be':'utf-8',{fatal:true}).decode(bytes)}
+    catch(_){try{text=new TextDecoder('gb18030',{fatal:true}).decode(bytes)}catch(_){throw Error('无法完整读取文字编码，请另存为 UTF-8；原文件未修改')}}
+    if(text.includes('\0'))throw Error('文件含二进制内容，不能当作文字导入');return text;
+  }
+  function documentXml(bytes){
+    const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+    if(/<!DOCTYPE|<!ENTITY/i.test(text))throw Error('文档 XML 含不支持的实体声明');
+    const xml=new DOMParser().parseFromString(text,'application/xml');
+    if(xml.getElementsByTagName('parsererror').length)throw Error('文档 XML 已损坏');return xml;
+  }
+  async function documentCrc(bytes){
+    const table=new Uint32Array(256);for(let value=0;value<256;value++){let crc=value;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);table[value]=crc}
+    let crc=0xffffffff;for(let index=0;index<bytes.length;index++){crc=(crc>>>8)^table[(crc^bytes[index])&255];if(index&&index%262144===0)await archiveYield()}return (crc^0xffffffff)>>>0;
+  }
+  function documentZipEntries(bytes){
+    if(!globalThis.fflate)throw Error('DOCX 读取组件未加载，请重新打开汐序');
+    const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);let end=-1;
+    for(let i=bytes.length-22;i>=Math.max(0,bytes.length-65557);i--)if(view.getUint32(i,true)===0x06054b50){end=i;break}
+    if(end<0||view.getUint16(end+4,true)||view.getUint16(end+6,true))throw Error('DOCX 不是受支持的完整 ZIP 文档');
+    const count=view.getUint16(end+10,true),offset=view.getUint32(end+16,true),size=view.getUint32(end+12,true);
+    if(!count||count>2000||offset+size>end)throw Error('DOCX 条目数量或目录范围无效');
+    let cursor=offset,total=0;const names=new Set(),expected=new Map();
+    for(let index=0;index<count;index++){
+      if(cursor+46>offset+size||view.getUint32(cursor,true)!==0x02014b50)throw Error('DOCX 目录不完整');
+      const flags=view.getUint16(cursor+8,true),packed=view.getUint32(cursor+20,true),unpacked=view.getUint32(cursor+24,true),length=view.getUint16(cursor+28,true),extra=view.getUint16(cursor+30,true),comment=view.getUint16(cursor+32,true);
+      if(cursor+46+length+extra+comment>offset+size||flags&1||unpacked===0xffffffff||packed===0xffffffff)throw Error('暂不支持加密、ZIP64 或损坏的 DOCX');
+      const name=new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(cursor+46,cursor+46+length));
+      if(!name||name.includes('\\')||name.startsWith('/')||name.split('/').includes('..')||names.has(name))throw Error('DOCX 中存在重复或不安全的文件路径');
+      names.add(name);expected.set(name,{bytes:unpacked,crc:view.getUint32(cursor+16,true)});total+=unpacked;
+      if(total>64*1024*1024||unpacked>ARCHIVE_FILE_LIMIT||unpacked>Math.max(packed,1)*1000)throw Error('DOCX 解压内容过大，未裁剪或导入');
+      cursor+=46+length+extra+comment;
+    }
+    if(cursor!==offset+size)throw Error('DOCX 目录长度不一致');
+    return new Promise((resolve,reject)=>fflate.unzip(bytes,(error,result)=>{
+      if(error){reject(Error('DOCX 解压失败'));return}
+      (async()=>{if(Object.keys(result).length!==expected.size)throw Error('DOCX 条目清单不一致');for(const [name,info] of expected){const content=result[name];if(!content||content.length!==info.bytes||await documentCrc(content)!==info.crc)throw Error('DOCX 内容校验失败，未导入')}return result})().then(resolve,reject);
+    }));
+  }
+  async function documentPicture(bytes,mime){
+    if(!['image/png','image/jpeg','image/webp'].includes(mime)||!bytes.length||bytes.length>ARCHIVE_FILE_LIMIT)throw Error('文档图片格式或大小不支持，未丢弃图片继续导入');
+    const magic=mime==='image/png'?archiveBase64(bytes.subarray(0,8))==='iVBORw0KGgo=':mime==='image/jpeg'?bytes[0]===255&&bytes[1]===216&&bytes[2]===255:String.fromCharCode(...bytes.subarray(0,4))==='RIFF'&&String.fromCharCode(...bytes.subarray(8,12))==='WEBP';
+    if(!magic)throw Error('图片类型与原始字节不一致');
+    return {hash:await archiveSha(bytes),mime,bytes:bytes.length,originalBytes:bytes};
+  }
+  async function documentDocx(bytes){
+    const entries=await documentZipEntries(bytes),main=entries['word/document.xml'];
+    if(!main||!entries['[Content_Types].xml'])throw Error('未找到 DOCX 正文');
+    if(entries['word/vbaProject.bin'])throw Error('不支持含宏的文档');
+    const xml=documentXml(main),relationships=new Map(),warnings=[],images=[],layout=[],plain=[];
+    if(entries['word/_rels/document.xml.rels'])for(const rel of documentXml(entries['word/_rels/document.xml.rels']).getElementsByTagName('Relationship'))relationships.set(rel.getAttribute('Id'),{target:rel.getAttribute('Target')||'',external:rel.getAttribute('TargetMode')==='External'});
+    const walk=async node=>{
+      if(node.nodeType!==1)return;const kind=node.localName;
+      if(['object','altChunk','pict'].includes(kind))throw Error('DOCX 含暂不支持的嵌入对象或旧式图片，请保留原文件');
+      if(kind==='t'){const text=node.textContent||'';layout.push({kind:'text',text});plain.push(text);return}
+      if(kind==='tab'){layout.push({kind:'text',text:'\t'});plain.push('\t');return}
+      if(kind==='br'||kind==='cr'){layout.push({kind:'break'});plain.push('\n');return}
+      if(kind==='blip'){
+        const id=node.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','embed'),rel=relationships.get(id);
+        if(!rel||rel.external)throw Error('DOCX 图片不是完整内嵌原件，未下载外部图片');
+        let target=rel.target.replace(/^\//,'');if(!rel.target.startsWith('/'))target='word/'+target;
+        const parts=[];for(const part of target.split('/')){if(part==='..'){if(!parts.length)throw Error('DOCX 图片路径无效');parts.pop()}else if(part&&part!=='.')parts.push(part)}
+        target=parts.join('/');const data=entries[target];if(!data)throw Error('DOCX 图片缺失，未导入');
+        const picture=await documentPicture(data,documentMime(target));images.push(picture);layout.push({kind:'image',index:images.length-1});return;
+      }
+      if(kind==='p')layout.push({kind:'open'});
+      for(const child of node.childNodes)await walk(child);
+      if(kind==='p'){layout.push({kind:'close'});plain.push('\n')}
+      if(kind==='tc'){layout.push({kind:'text',text:'\t'});plain.push('\t')}
+    };
+    await walk(xml.documentElement);
+    if(Object.keys(entries).some(name=>/^word\/(header|footer|footnotes|endnotes|comments)/.test(name)))warnings.push('正文视图不展开页眉、页脚、脚注或批注；这些内容仍完整保留在原始 DOCX 中。');
+    if(xml.getElementsByTagNameNS('*','ins').length||xml.getElementsByTagNameNS('*','del').length)warnings.push('此文档含修订，提取视图不等同 Word 的修订显示；请核对原件。');
+    const result={text:plain.join(''),images,layout,warnings};
+    if(entries['docProps/core.xml']){const core=documentXml(entries['docProps/core.xml']);for(const [key,tag] of [['createdAt','created'],['updatedAt','modified']]){const value=core.getElementsByTagNameNS('*',tag)[0]?.textContent;if(value&&Number.isFinite(Date.parse(value))&&/(?:Z|[+-]\d\d:\d\d)$/.test(value))result[key]=new Date(value).toISOString()}}
+    return result;
+  }
+  async function documentPdf(bytes){
+    if(!globalThis.pdfjsLib?.getDocument)throw Error('PDF 读取组件未就绪');
+    if(String.fromCharCode(...bytes.subarray(0,5))!=='%PDF-')throw Error('文件不是完整的 PDF');
+    let pdf;const images=[],layout=[],plain=[],warnings=['PDF 页面是阅读预览，提取文字的顺序请核对；原始 PDF 字节完整保留。'];
+    try{
+      pdf=await pdfjsLib.getDocument({data:bytes.slice(),cMapUrl:'cmaps/',cMapPacked:true,isEvalSupported:false}).promise;
+      if(!pdf.numPages||pdf.numPages>50)throw Error('文档导入一次支持最多 50 页 PDF，超限不会截取前几页');
+      let imageBytes=0;
+      for(let index=1;index<=pdf.numPages;index++){
+        const page=await pdf.getPage(index),content=await page.getTextContent(),text=content.items.map(item=>item.str+(item.hasEOL?'\n':' ')).join('');plain.push(text);
+        const base=page.getViewport({scale:1}),scale=Math.min(1.5,Math.sqrt(2000000/(base.width*base.height))),viewport=page.getViewport({scale}),canvas=document.createElement('canvas');
+        canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+        try{await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('PDF 页面预览失败');const data=new Uint8Array(await blob.arrayBuffer());imageBytes+=data.length;if(imageBytes>DOCUMENT_IMAGE_BUDGET)throw Error('PDF 页面预览总量超过 64 MiB，未裁剪或导入');const picture=await documentPicture(data,'image/png');images.push({...picture,width:canvas.width,height:canvas.height});layout.push({kind:'text',text:'第 '+index+' 页'},{kind:'break'},{kind:'image',index:images.length-1},{kind:'break'})}finally{canvas.width=0;canvas.height=0;page.cleanup()}
+        if(plain.join('\n\n').length>50000)throw Error('PDF 提取文字超过 50000 字符，未截断导入');await archiveYield();
+      }
+      if(!plain.join('').trim())warnings.push('这是无可提取文字的 PDF；已保存原件与全部页面预览，尚不能按图片中的文字检索。');
+      return {text:plain.join('\n\n'),images,layout,warnings};
+    }catch(error){throw Error(error.name==='PasswordException'?'暂不支持加密 PDF，请保留原件':error.message||'PDF 读取失败')}finally{await pdf?.destroy()}
+  }
+  async function parseArchiveDocument(bytes,fileName){
+    const format=String(fileName).split('.').pop().toLowerCase();
+    if(!DOCUMENT_FORMATS.includes(format))throw Error(format==='hdoc'?'hdoc 仍未可靠解码，请保留原件':'此文档格式尚不支持，请保留原件');
+    let parsed;
+    if(format==='html'||format==='htm')parsed=await parseArchiveHtml(bytes,fileName);
+    else if(format==='docx')parsed=await documentDocx(bytes);
+    else if(format==='pdf')parsed=await documentPdf(bytes);
+    else if(['png','jpg','jpeg','webp'].includes(format))parsed={text:'',images:[await documentPicture(bytes,documentMime(fileName))],layout:[{kind:'image',index:0}]};
+    else{const text=documentText(bytes);parsed={text,images:[],layout:[{kind:'text',text}]}}
+    if((!parsed.text.trim()&&!parsed.images.length)||parsed.text.length>50000||parsed.layout.length>10000||parsed.images.length>500||parsed.images.reduce((sum,picture)=>sum+picture.bytes,0)>DOCUMENT_IMAGE_BUDGET)throw Error('内容为空或超出文档导入范围，未压缩、裁剪或导入');
+    return {...parsed,title:parsed.title||titleFromFile(fileName,parsed.text),fileName,format,warnings:parsed.warnings||[],fileBytes:bytes.length,originalHash:await archiveSha(bytes),textHash:await archiveSha(new TextEncoder().encode(parsed.text))};
+  }
+  async function archiveDocumentProjection(parsed,bytes){
+    await archiveStore(bytes,parsed.originalHash);for(const image of parsed.images){if(image.originalBytes){await archiveStore(image.originalBytes,image.hash);delete image.originalBytes}}
+    return {version:2,originalHash:parsed.originalHash,fileName:parsed.fileName,fileBytes:parsed.fileBytes,textHash:parsed.textHash,images:parsed.images,layout:parsed.layout,format:parsed.format,warnings:parsed.warnings||[]};
+  }
+  const settingsBeforeDocumentImport=renderSettings;
+  renderSettings=function(){let html=settingsBeforeDocumentImport().replace(/accept="\.txt,[^"]*"/g,'accept="'+NOTE_IMPORT_ACCEPT+'"');if(notes.some(note=>note.archive?.version===2))html=html.replace('请保留华为导出的全部 HTML，或在每条笔记中导出原始 HTML；','请保留全部源文档，或在每条笔记中导出原文件；');return html};
+  root.addEventListener('click',event=>{if(noteImportBusy&&['back','nav'].includes(event.target.closest('[data-action]')?.dataset.action)){noteImportGeneration++;noteImportBusy=false;noteImportDraft=[]}},true);
 
   const AGENT_RAG_CONFIG={
     version:'hybrid-local-v2',maxResults:12,defaultResults:8,maxContextChars:6400,
@@ -2461,6 +2605,8 @@
   const knowledgePending=new Map();
   let knowledgeSequence=0,knowledgeMessage='';
   function knowledgeStatus(){try{return JSON.parse(window.XixuKnowledge?.status?.()||'{}')}catch(_){return {paired:false}}}
+  function knowledgeMode(){try{const saved=localStorage.getItem('xixu-knowledge-mode');if(['local','extended'].includes(saved))return saved}catch(_){}return knowledgeStatus().paired?'extended':'local'}
+  function knowledgeEnabled(){return knowledgeMode()==='extended'&&knowledgeStatus().paired}
   function knowledgeCall(operation,payload={}){
     return new Promise((resolve,reject)=>{
       const id='knowledge_'+Date.now()+'_'+(++knowledgeSequence);
@@ -2485,7 +2631,7 @@
     }));
   }
   async function knowledgeAnswer(query,refs,conversationId){
-    if(!knowledgeStatus().paired)return null;
+    if(!knowledgeEnabled())return null;
     let room=4800;const local=[];
     for(const ref of refs.slice(0,2)){const text='汐序本机资料：'+ref.title+'\n'+String(ref.text||'');const clipped=text.slice(0,Math.min(1200,room));if(clipped){local.push(clipped);room-=clipped.length}}
     let result;
@@ -2501,7 +2647,8 @@
   }
   function knowledgeSettingsHtml(){
     const status=knowledgeStatus();
-    return '<div class="tide-section"><h2>电脑知识库</h2></div><div class="tide-surface"><p>'+esc(status.paired?'已配对：'+status.server:'尚未配对电脑')+'</p><p>在电脑知识库中生成连接信息，复制到这里。电脑与手机需要在可互通的网络中。</p>'+(knowledgeMessage?'<p role="status">'+esc(knowledgeMessage)+'</p>':'')+'<form id="xixu-knowledge-pair" class="tide-form"><label class="tide-field">电脑连接信息<textarea name="bundle" required maxlength="12000" rows="4" placeholder="粘贴电脑生成的完整连接信息"></textarea></label><button class="tide-primary tide-full">配对电脑</button></form>'+(status.paired?'<button class="tide-secondary tide-full" data-action="knowledge-test">测试电脑连接</button><button class="tide-delete tide-full" data-action="knowledge-disconnect">断开电脑连接</button>':'')+'<p>配对后，问答会把本次选中的手机资料发送到电脑；电脑配置模型后，会把相关片段发送给该模型。电脑关机时会提示连接失败，再尝试手机原有助手。</p></div>';
+    const local=knowledgeMode()==='local';
+    return '<div class="tide-section"><h2>知识库模式</h2></div><div class="tide-surface"><div class="tide-detail-actions"><button class="'+(local?'tide-primary':'tide-secondary')+'" data-action="knowledge-mode-local" aria-pressed="'+local+'">本机备忘录</button><button class="'+(!local?'tide-primary':'tide-secondary')+'" data-action="knowledge-mode-extended" aria-pressed="'+(!local)+'">电脑扩展</button></div><p>'+ (local?'记录、导入和检索都可在手机本机完成，电脑关机也能使用。':'把个人电脑里已导入的聊天和工作资料一起用于查询，需要电脑在线。')+'</p>'+(knowledgeMessage?'<p role="status">'+esc(knowledgeMessage)+'</p>':'')+(local?'':'<p>'+esc(status.paired?'已配对：'+status.server:'尚未配对电脑')+'</p><form id="xixu-knowledge-pair" class="tide-form"><label class="tide-field">电脑连接信息<textarea name="bundle" required maxlength="12000" rows="4" placeholder="粘贴电脑生成的完整连接信息"></textarea></label><button class="tide-primary tide-full">配对电脑</button></form>'+(status.paired?'<button class="tide-secondary tide-full" data-action="knowledge-test">测试电脑连接</button><button class="tide-secondary tide-full" data-action="knowledge-sync-preview">同步备忘录与原件</button><button class="tide-delete tide-full" data-action="knowledge-disconnect">断开电脑连接</button>':'')+'<p>查询会发送本次选中的手机片段；完整笔记与原件只在你确认同步后发送到配对电脑。电脑配置回答模型后，相关片段会按设置发送给该模型。</p>')+'</div>'+(typeof knowledgeSyncHtml==='function'?knowledgeSyncHtml():'');
   }
   const settingsBeforeKnowledge=renderSettings;
   renderSettings=function(){return settingsBeforeKnowledge()+knowledgeSettingsHtml()};
@@ -2514,7 +2661,10 @@
   });
   root.addEventListener('click',async event=>{
     const button=event.target.closest('[data-action]'),action=button?.dataset.action;
-    if(action==='knowledge-test'){
+    if(action==='knowledge-mode-local'||action==='knowledge-mode-extended'){
+      if(typeof cancelKnowledgeSync==='function'&&cancelKnowledgeSync()===false)return;
+      try{localStorage.setItem('xixu-knowledge-mode',action==='knowledge-mode-local'?'local':'extended');knowledgeMessage='';render()}catch(_){notify('模式未能保存，请检查本机存储')}
+    }else if(action==='knowledge-test'){
       try{const result=await knowledgeCall('health');knowledgeMessage='电脑可访问，已有 '+result.documents+' 份资料。'+(result.answer_model_configured?'电脑已保存模型密钥，是否可用以电脑连接测试为准。':'电脑尚未配置回答模型。')}
       catch(error){knowledgeMessage=error.message}render();
     }else if(action==='knowledge-disconnect'){
@@ -2524,6 +2674,60 @@
       try{const result=await knowledgeCall('excerpt',{document_id,version,start:Number(start),end:Number(end)});const dialog=document.createElement('dialog'),title=document.createElement('h3'),text=document.createElement('pre'),close=document.createElement('button');title.textContent=result.title||'电脑原文';text.textContent=result.text||'';text.style.whiteSpace='pre-wrap';close.textContent='关闭';close.onclick=()=>{dialog.close();dialog.remove()};dialog.append(title,text,close);root.append(dialog);dialog.showModal()}
       catch(error){notify(error.message)}
     }
+  });
+
+  let knowledgeSyncDraft=null,knowledgeSyncBusy=false,knowledgeSyncCommitting=false,knowledgeSyncMessage='',knowledgeSyncGeneration=0;
+  function cancelKnowledgeSync(){if(knowledgeSyncCommitting){notify('正在等待电脑确认提交，请稍等');return false}knowledgeSyncGeneration++;knowledgeSyncBusy=false;knowledgeSyncDraft=null;knowledgeSyncMessage='';return true}
+  function knowledgeSyncProgress(text){knowledgeSyncMessage=text;const target=main.querySelector('#xixu-sync-progress');if(target)target.textContent=text}
+  function knowledgeSyncHtml(){
+    if(knowledgeMode()!=='extended')return '';
+    if(knowledgeSyncBusy)return '<p id="xixu-sync-progress" class="tide-note" role="status">'+esc(knowledgeSyncMessage||'正在准备同步…')+'</p>';
+    if(!knowledgeSyncDraft)return knowledgeSyncMessage?'<p class="tide-note" role="status">'+esc(knowledgeSyncMessage)+'</p>':'';
+    return '<form id="xixu-knowledge-sync-confirm" class="tide-surface"><h3>核对后同步到个人电脑</h3><p>本机 '+knowledgeSyncDraft.count+' 条笔记；电脑当前设备分区 '+knowledgeSyncDraft.remote.notes+' 条。同步包含正文、来源时间、图片及导入原文件，原手机资料保持在本机。</p><label><input name="deletions" type="checkbox">同时移除电脑中本设备已在手机删除的笔记</label><p class="tide-note">默认只新增或更新。聊天资料请在电脑端另行导入。</p><button class="tide-primary" type="submit">确认同步备忘录</button><button class="tide-secondary" type="button" data-action="knowledge-sync-cancel">取消</button></form>';
+  }
+  root.addEventListener('click',async event=>{
+    const action=event.target.closest('[data-action]')?.dataset.action;
+    if(action==='knowledge-sync-cancel'){cancelKnowledgeSync();render(false);return}
+    if(action!=='knowledge-sync-preview'||knowledgeSyncBusy)return;
+    if(!knowledgeEnabled()){notify('请先启用电脑扩展并配对');return}
+    const generation=++knowledgeSyncGeneration;knowledgeSyncBusy=true;knowledgeSyncDraft=null;knowledgeSyncMessage='正在检查电脑同步能力…';render(false);
+    try{
+      if(storageBlocked)throw Error('本机数据读取异常，未发起同步');
+      const health=await knowledgeCall('health');if(health.notes_sync_version!==1)throw Error('请升级电脑配套服务，当前连接仅支持查询');
+      const remote=await knowledgeCall('sync-status');if(generation!==knowledgeSyncGeneration)return;
+      knowledgeSyncDraft={count:notes.length,remote};knowledgeSyncMessage='';
+    }catch(error){if(generation===knowledgeSyncGeneration)knowledgeSyncMessage=error.message}
+    finally{if(generation===knowledgeSyncGeneration){knowledgeSyncBusy=false;render(false)}}
+  });
+  root.addEventListener('submit',async event=>{
+    if(event.target.id!=='xixu-knowledge-sync-confirm')return;event.preventDefault();if(knowledgeSyncBusy||!knowledgeSyncDraft||!knowledgeEnabled())return;
+    const allow_deletions=new FormData(event.target).get('deletions')==='on',generation=++knowledgeSyncGeneration,draft=knowledgeSyncDraft;
+    let committing=false;knowledgeSyncBusy=true;knowledgeSyncMessage='正在核对本机原件…';render(false);
+    const active=()=>{if(generation!==knowledgeSyncGeneration||!knowledgeEnabled())throw Error('同步已取消，尚未提交的暂存不计入电脑笔记')};
+    try{
+      if(storageBlocked)throw Error('本机数据读取异常，未发起同步');
+      if(notes.length!==draft.count)throw Error('本机笔记条数已变化，请重新核对');
+      const copy=JSON.parse(JSON.stringify(notes));checkData(snapshot(),false);
+      const {session}=await knowledgeCall('sync-begin',{count:copy.length,revision:draft.remote.revision,allow_deletions});active();
+      const sentAssets=new Set();
+      for(let index=0;index<copy.length;index++){
+        active();const note=copy[index],assets=new Map();
+        if(note.archive){assets.set(note.archive.originalHash,()=>archiveRead(note.archive.originalHash));for(const image of note.archive.images)assets.set(image.hash,()=>archiveRead(image.hash))}
+        for(const image of note.images||[]){const match=/^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(image.dataUrl||'');if(!match)throw Error('有图片编码无法核对，未提交快照');const bytes=archiveUnbase64(match[1]),hash=await archiveSha(bytes);assets.set(hash,async()=>bytes);image.hash=hash;image.bytes=bytes.length;delete image.dataUrl}
+        for(const [hash,read] of assets){
+          active();if(sentAssets.has(hash))continue;const bytes=await read();if(await archiveSha(bytes)!==hash)throw Error('原件哈希不一致，未提交快照');
+          for(let offset=0;offset<bytes.length;offset+=128*1024){active();knowledgeSyncProgress('同步第 '+(index+1)+' / '+copy.length+' 条笔记的原件…');await knowledgeCall('sync-asset',{session,hash,offset,total:bytes.length,data:archiveBase64(bytes.subarray(offset,offset+128*1024))});await archiveYield()}
+          sentAssets.add(hash);
+        }
+        const bytes=new TextEncoder().encode(JSON.stringify(note)),parts=Math.max(1,Math.ceil(bytes.length/(128*1024)));
+        for(let part=0;part<parts;part++){active();await knowledgeCall('sync-note',{session,note_id:note.id,part,parts,data:archiveBase64(bytes.subarray(part*128*1024,(part+1)*128*1024))});await archiveYield()}
+        knowledgeSyncProgress('已暂存 '+(index+1)+' / '+copy.length+' 条，尚未提交…');
+      }
+      active();committing=true;knowledgeSyncCommitting=true;knowledgeSyncMessage='正在提交并等待电脑确认…';render(false);
+      const result=await knowledgeCall('sync-commit',{session});if(generation!==knowledgeSyncGeneration)return;
+      knowledgeSyncDraft=null;knowledgeSyncMessage='同步完成：'+result.notes+' 条笔记，更新 '+result.changed+' 条，移除 '+result.removed+' 条。原件已核对；电脑会继续整理检索索引。';
+    }catch(error){if(generation===knowledgeSyncGeneration){knowledgeSyncDraft=null;knowledgeSyncMessage=(committing?'电脑提交结果尚未确认，请核对电脑状态。':'同步未提交，手机资料仍保留。')+error.message}}
+    finally{knowledgeSyncCommitting=false;if(generation===knowledgeSyncGeneration){knowledgeSyncBusy=false;render(false)}}
   });
 
   let agentPending=false,agentDraft=null,agentRequestActive=false,agentImagePending=false,agentPendingHistoryId='',agentRequest=null,agentImageConversationId='';
@@ -2942,7 +3146,7 @@ function parseClassPeriods(value){
       if(request!==agentRequest)return;
       const retrievalQuery=typeof contextualAgentRagQuery==='function'?contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId):query;
       const refs=semanticAgentSearch(retrievalQuery);request.refs=refs;request.stage='thinking';const resultDraft=agentConversationResults.get(conversationId);if(resultDraft)resultDraft.refs=refs;if(activeConversationId()===conversationId)agentDraft=resultDraft;render(false);
-      if(!writeIntent&&typeof knowledgeAnswer==='function'&&knowledgeStatus().paired){
+      if(!writeIntent&&typeof knowledgeAnswer==='function'&&knowledgeEnabled()){
         try{const remote=await knowledgeAnswer(query,refs,conversationId);if(request!==agentRequest)return;if(remote){finishAgent(query,remote,request);return}}
         catch(error){if(request!==agentRequest)return;notify('电脑知识库未完成：'+error.message+'；继续使用手机助手。')}
       }

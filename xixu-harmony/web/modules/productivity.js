@@ -225,7 +225,7 @@
     return preferred?String(preferred):String(((!base||/^(note|notes|备忘录|新建备忘录|未命名)(?:[-_ ]?\d+)?$/i.test(base))?first:base)||first||'导入的笔记').slice(0,80);
   }
   function jsonNotes(value,fileName,lastModified,result=[]){
-    if(result.length>=500)return result;
+    if(result.length>=500)throw Error('每个 JSON 最多 500 条笔记，未截取或导入');
     if(Array.isArray(value)){value.forEach(item=>jsonNotes(item,fileName,lastModified,result));return result}
     if(!value||typeof value!=='object')return result;
     for(const key of ['notes','items','records','data']){if(Array.isArray(value[key])){jsonNotes(value[key],fileName,lastModified,result);return result}}
@@ -236,39 +236,46 @@
     }
     return result;
   }
-  async function notesFromFile(file){
-    const extension=(file.name.split('.').pop()||'').toLowerCase(),sourceFileModifiedAt=file.lastModified?new Date(file.lastModified).toISOString():'',updatedAt='',createdAt='';
-    if(/^(png|jpe?g|webp)$/.test(extension)){
-      if(file.size>10*1024*1024)throw Error('“'+file.name+'” 超过 10 MB');
-      const dataUrl=await compactAttachmentImage(await fileDataUrl(file));if(dataUrl.length>2500000)throw Error('“'+file.name+'” 压缩后仍然过大');
-      return [{title:titleFromFile(file.name,''),text:'',createdAt,updatedAt,sourceFileModifiedAt,images:[{id:uid(),name:String(file.name||'导入的图片').slice(0,120),type:'image/jpeg',dataUrl}]}];
+  async function notesFromFile(file,index,selection){
+    const extension=(file.name.split('.').pop()||'').toLowerCase(),sourceFileModifiedAt=file.lastModified?new Date(file.lastModified).toISOString():'',bytes=await archiveSelectedBytes(file,index,selection);
+    selection.totalBytes=(selection.totalBytes||0)+bytes.length;if(selection.totalBytes>25*1024*1024)throw Error('所选文件实际总大小超过 25 MiB，未截断或新增笔记');
+    if(extension==='json'){
+      let value;try{value=JSON.parse(documentText(bytes))}catch(_){throw Error('“'+file.name+'” 不是有效的 JSON 文件')}
+      const items=jsonNotes(value,file.name,sourceFileModifiedAt),originalHash=await archiveSha(bytes);await archiveStore(bytes,originalHash);
+      for(const item of items){if(item.text.length>50000)throw Error('JSON 中有笔记超过 50000 字符，未截断导入');item.archive={version:2,format:'json',fileName:file.name,fileBytes:bytes.length,originalHash,textHash:await archiveSha(new TextEncoder().encode(item.text)),images:[],layout:[{kind:'text',text:item.text}],warnings:['此条是 JSON 的文字投影；完整 JSON 原文件可从本条导出。']}}
+      return items;
     }
-    if(file.size>5*1024*1024)throw Error('“'+file.name+'” 超过 5 MB');
-    const raw=decodeNoteFile(await file.arrayBuffer());
-    if(extension==='html'||extension==='htm'){const parsed=htmlNote(raw);return parsed.text?[{title:titleFromFile(file.name,parsed.text,parsed.title),text:parsed.text,createdAt,updatedAt,sourceFileModifiedAt}]:[]}
-    if(extension==='json'){let parsed;try{parsed=JSON.parse(raw)}catch(_){throw Error('“'+file.name+'” 不是有效的 JSON 文件')}return jsonNotes(parsed,file.name,sourceFileModifiedAt)}
-    const text=raw;return text.trim()?[{title:titleFromFile(file.name,text),text,createdAt,updatedAt,sourceFileModifiedAt}]:[];
+    const parsed=await parseArchiveDocument(bytes,file.name),archive=await archiveDocumentProjection(parsed,bytes);
+    return [{title:parsed.title,text:parsed.text,images:[],createdAt:parsed.createdAt||'',updatedAt:parsed.updatedAt||'',sourceFileModifiedAt,archive}];
   }
   async function prepareNoteImport(fileList){
+    if(noteImportBusy)return;
     const files=Array.from(fileList||[]);noteImportError='';noteImportDraft=[];
     if(!files.length)return;if(files.length>500){notify('一次最多选择 500 个文件。');return}
     if(files.reduce((sum,file)=>sum+file.size,0)>25*1024*1024){notify('所选文件总大小不能超过 25 MB。');return}
-    const allowed=/\.(txt|md|markdown|html?|json|png|jpe?g|webp)$/i,unsupported=files.filter(file=>!allowed.test(file.name));
-    if(unsupported.length){notify('请选择 TXT、Markdown、HTML、JSON 或图片文件。');return}
+    const allowed=/\.(txt|md|markdown|csv|html?|json|docx|pdf|png|jpe?g|webp)$/i,unsupported=files.filter(file=>!allowed.test(file.name));
+    if(unsupported.length){notify('支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和图片；hdoc、旧版 DOC 暂未支持。');return}
+    const selection={},generation=++noteImportGeneration;noteImportBusy=true;openPanel({kind:'note-import'});
     try{
-      const signature=item=>(item.title+'\n'+item.text+'\n'+normalizeAttachments(item.images).map(image=>image.dataUrl.length+':'+image.dataUrl.slice(-80)).join('|')).trim().replace(/\s+/g,' ').toLowerCase();
-      const groups=await Promise.all(files.map(notesFromFile)),existing=new Set(notes.map(signature)),within=new Set();
-      noteImportDraft=groups.flat().filter(item=>item.text||normalizeAttachments(item.images).length).slice(0,5000).map((item,index)=>{const key=signature(item),duplicate=existing.has(key)||within.has(key);within.add(key);return {...item,index,duplicate}});
+      if(storageBlocked)throw Error('本机资料读取异常，未导入');
+      const signature=item=>item.archive?item.archive.originalHash+'\n'+item.archive.fileName+'\n'+item.title+'\n'+item.text:item.title+'\n'+item.text;
+      const groups=[];for(let index=0;index<files.length;index++){if(generation!==noteImportGeneration)return;groups.push(await notesFromFile(files[index],index,selection));await archiveYield()}
+      if(generation!==noteImportGeneration)return;
+      const items=groups.flat().filter(item=>item.text||noteImageCount(item));if(items.length+notes.length>5000)throw Error('导入后会超过 5000 条笔记，未截断或新增');
+      const existing=new Set(notes.map(signature)),within=new Set();
+      noteImportDraft=items.map((item,index)=>{const key=signature(item),duplicate=existing.has(key)||within.has(key);within.add(key);return {...item,index,duplicate}});
       if(!noteImportDraft.length){notify('这些文件中没有找到可导入的笔记或图片。');return}
       openPanel({kind:'note-import'});
-    }catch(error){noteImportError=String(error?.message||error||'无法读取这些文件');openPanel({kind:'note-import'})}
+    }catch(error){if(generation===noteImportGeneration){noteImportDraft=[];noteImportError=String(error?.message||error||'无法读取这些文件');openPanel({kind:'note-import'})}}
+    finally{if(window.XixuFile&&selection.id!==undefined)window.XixuFile.finish(selection.id);if(generation===noteImportGeneration){noteImportBusy=false;if(panel?.kind==='note-import')render(false)}}
   }
   function renderNoteImport(){
-    if(noteImportError)return top('导入笔记')+'<div class="tide-note warm">'+esc(noteImportError)+'</div><button class="tide-primary tide-full" data-action="pick-note-import">重新选择文件</button><input id="xixu-note-import-files" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.json,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/html,application/json,image/png,image/jpeg,image/webp" hidden>';
+    if(noteImportBusy)return top('读取文档')+'<p class="tide-note" role="status">正在核对文字、图片和原文件…确认前不会加入备忘录。可以返回取消。</p>';
+    if(noteImportError)return top('导入笔记')+'<div class="tide-note warm" role="alert">'+esc(noteImportError)+'</div><button class="tide-primary tide-full" data-action="pick-note-import">重新选择文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>';
     const available=noteImportDraft.filter(item=>!item.duplicate).length,duplicates=noteImportDraft.length-available;
-    return top('核对笔记导入')+'<div class="xixu-import-summary"><strong>'+available+' 条待导入</strong><span>'+(duplicates?duplicates+' 条重复，已自动跳过':'没有发现重复')+'</span></div><form id="xixu-note-import-review" class="xixu-note-import-list">'+noteImportDraft.map((item,index)=>'<label class="'+(item.duplicate?'is-duplicate':'')+'"><input type="checkbox" name="noteImport" value="'+index+'" '+(item.duplicate?'disabled':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+(item.duplicate?'已有相同笔记':'作为未关联笔记导入')+'</small><em>'+esc(item.text?item.text.replace(/\s+/g,' ').slice(0,100):normalizeAttachments(item.images).length+' 张图片')+'</em></span></label>').join('')+'<div class="tide-detail-actions"><button class="tide-secondary" type="button" data-action="pick-note-import">重新选择</button><button class="tide-primary" type="submit" '+(!available?'disabled':'')+'>导入选中内容</button></div></form><input id="xixu-note-import-files" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.json,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/html,application/json,image/png,image/jpeg,image/webp" hidden><div class="tide-note">导入的笔记会保存到汐序，不会修改或删除华为备忘录中的笔记。</div>';
+    return top('核对笔记导入')+'<div class="xixu-import-summary"><strong>'+available+' 条待导入</strong><span>'+(duplicates?duplicates+' 条重复，已自动跳过':'没有发现重复')+'</span></div><div class="tide-note">原文件已在本机暂存并核对哈希，确认后才加入笔记。文字与图文视图用于阅读和检索，不代表完全重建原文档的排版。</div><form id="xixu-note-import-review" class="xixu-note-import-list">'+noteImportDraft.map((item,index)=>'<label class="'+(item.duplicate?'is-duplicate':'')+'"><input type="checkbox" name="noteImport" value="'+index+'" '+(item.duplicate?'disabled':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+(item.duplicate?'已有相同原件':noteImageCount(item)+' 张图片 · 保留原件')+'</small><em>'+esc(item.text?item.text.replace(/\s+/g,' ').slice(0,100):noteImageCount(item)+' 张图片')+'</em>'+(item.archive?.warnings||[]).map(text=>'<small>'+esc(text)+'</small>').join('')+'</span></label>').join('')+'<div class="tide-detail-actions"><button class="tide-secondary" type="button" data-action="pick-note-import">重新选择</button><button class="tide-primary" type="submit" '+(!available?'disabled':'')+'>导入选中内容</button></div></form><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden><div class="tide-note">不会修改或删除原文件。请同时备份原件；JSON 索引备份不包含独立原件。</div>';
   }
-  function renderNoteImportHelp(){return top('导入笔记文件')+'<div class="tide-note">支持 TXT、Markdown、HTML、JSON 和图片文件。保存前可以预览内容、跳过重复笔记，再把选中的内容保存到汐序。</div><button class="tide-primary tide-full" data-action="pick-note-import">选择笔记文件</button><input id="xixu-note-import-files" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,.json,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/html,application/json,image/png,image/jpeg,image/webp" hidden>'}
+  function renderNoteImportHelp(){return top('导入笔记文件')+'<div class="tide-note">支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和 PNG/JPEG/WebP。单个原件最多 20 MiB、每批最多 25 MiB；PDF 最多 50 页。保存前核对提取结果，原文件完整保留。hdoc 和旧版 DOC 尚未解码。</div><button class="tide-primary tide-full" data-action="pick-note-import">选择笔记文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>'}
 
   const baseImportReview=importReviewHtml;importReviewHtml=function(label){
     return baseImportReview(label);
@@ -327,7 +334,7 @@
     if(event.target.id!=='xixu-note-course-relation')return;
     const picker=main.querySelector('#xixu-note-course-picker');if(picker)picker.hidden=event.target.value!=='linked';
   });
-  root.addEventListener('submit',event=>{
+  root.addEventListener('submit',async event=>{
     if(event.target.id==='tide-form'){
       const data=new FormData(event.target),editingId=String(data.get('editingId')||''),minutes=Number(data.get('estimateMinutes')||0);
       setTimeout(()=>{const task=editingId?getTask(editingId):tasks.slice().reverse().find(t=>t.title===String(data.get('title')).trim()&&t.date===String(data.get('date')));if(task){task.estimateMinutes=minutes;if(!Array.isArray(task.sessions))task.sessions=[];persist()}},0);
@@ -349,6 +356,14 @@
       if(contentChanged){if(existing)notes[notes.indexOf(existing)]=note;else notes.push(note)}
       clearTimeout(noteDraftTimer);noteEditorDraft=null;try{localStorage.removeItem('xixu-note-editor-draft')}catch(_){}noteImageDraft=[];noteImageDraftKey='';panel=null;previousPanel=null;page='notes';if(contentChanged)queueDelightCue('note-saved',{id:note.id,from});render();notify(!contentChanged?'内容未变，上次编辑时间保持不变':existing?'笔记已更新':'笔记已保存');
     }else if(event.target.id==='xixu-note-import-review'){
-      event.preventDefault();const selected=new Set(new FormData(event.target).getAll('noteImport').map(Number)),now=new Date().toISOString(),added=noteImportDraft.filter((item,index)=>selected.has(index)&&!item.duplicate).map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:normalizeAttachments(item.images),createdAt:String(item.createdAt??''),updatedAt:String(item.updatedAt??''),importedAt:now,...(item.sourceFileModifiedAt?{sourceFileModifiedAt:item.sourceFileModifiedAt}:{})}));if(!added.length){notify('至少选择一条笔记');return}notes.push(...added);noteImportDraft=[];noteImportError='';panel=null;previousPanel=null;page='notes';render();notify('已导入 '+added.length+' 条笔记');
+      event.preventDefault();if(noteImportBusy)return;const selected=new Set(new FormData(event.target).getAll('noteImport').map(Number)),chosen=noteImportDraft.filter((item,index)=>selected.has(index)&&!item.duplicate);if(!chosen.length){notify('至少选择一条笔记');return}
+      const generation=++noteImportGeneration;noteImportBusy=true;const button=event.target.querySelector('[type="submit"]');button.disabled=true;
+      try{
+        if(storageBlocked)throw Error('本机资料读取异常，未写入');
+        await verifyNoteArchiveSources(chosen);if(generation!==noteImportGeneration)throw Error('导入已取消');
+        const now=new Date().toISOString(),added=chosen.map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:normalizeAttachments(item.images),createdAt:String(item.createdAt??''),updatedAt:String(item.updatedAt??''),importedAt:now,...(item.archive?{archive:item.archive}:{}),...(item.sourceFileModifiedAt?{sourceFileModifiedAt:item.sourceFileModifiedAt}:{})})),oldNotes=notes,oldSaved=lastSaved;
+        notes=[...notes,...added];try{const value=JSON.stringify(checkData(snapshot(),false));storageWrite(value);lastSaved=value;saveError.hidden=true}catch(error){notes=oldNotes;lastSaved=oldSaved;throw Error('笔记索引未保存，原有资料未替换；请检查可用空间')}
+        noteImportDraft=[];noteImportError='';panel=null;previousPanel=null;page='notes';render(false);notify('已导入 '+added.length+' 条笔记');
+      }catch(error){notify(error.message);if(button.isConnected)button.disabled=false}finally{if(generation===noteImportGeneration)noteImportBusy=false}
     }
   });

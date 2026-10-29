@@ -57,9 +57,10 @@ export class KnowledgeBridge {
   }
 
   call(id: string, operation: string, payload: string): boolean {
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || payload.length > 22000) { return false; }
+    const syncOperation: boolean = ['sync-status', 'sync-begin', 'sync-note', 'sync-asset', 'sync-commit'].includes(operation);
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || payload.length > (syncOperation ? 300000 : 22000)) { return false; }
     if (deviceInfo.sdkApiVersion < 20) { this.reply(id, false, '电脑知识库连接需要 HarmonyOS API 20 或以上版本。'); return true; }
-    if (!['pair', 'health', 'search', 'chat', 'excerpt'].includes(operation)) { return false; }
+    if (!['pair', 'health', 'search', 'chat', 'excerpt'].includes(operation) && !syncOperation) { return false; }
     this.request(id, operation, payload);
     return true;
   }
@@ -82,6 +83,11 @@ export class KnowledgeBridge {
         method = http.RequestMethod.POST;
       } else if (operation === 'search' || operation === 'chat') {
         path = '/v1/' + operation; body = payload; method = http.RequestMethod.POST;
+      } else if (operation === 'sync-status') {
+        path = '/v1/notes/status';
+      } else if (operation === 'sync-begin' || operation === 'sync-note' || operation === 'sync-asset' || operation === 'sync-commit') {
+        const endpoint: string = operation === 'sync-begin' ? 'begin' : operation === 'sync-note' ? 'part' : operation === 'sync-asset' ? 'asset' : 'commit';
+        path = '/v1/notes/' + endpoint; body = payload; method = http.RequestMethod.POST;
       } else if (operation === 'excerpt') {
         const query = JSON.parse(payload) as ExcerptQuery;
         if (!/^[a-f0-9]{16,64}$/.test(query.document_id) || !/^[a-f0-9]{16,64}$/.test(query.version) ||
@@ -101,6 +107,8 @@ export class KnowledgeBridge {
       if (status < 200 || status >= 300) {
         if (status === 401 || status === 403) { throw new Error('配对已失效，请在电脑生成新配对码。'); }
         if (status === 409 && operation === 'chat') { throw new Error('电脑模型尚未就绪，请在电脑保存并测试模型设置。'); }
+        if (status === 409 && operation.startsWith('sync-')) { throw new Error('电脑快照已变化或同步发生冲突，请重新核对再同步。'); }
+        if (status === 404 && operation.startsWith('sync-')) { throw new Error('电脑服务尚不支持完整笔记同步，请先升级配套服务。'); }
         throw new Error('电脑返回错误（' + String(status) + '），请查看电脑端状态。');
       }
       if (text.length > 1024 * 1024) { throw new Error('电脑响应过大，请缩小查询范围。'); }

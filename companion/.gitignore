@@ -1,0 +1,12 @@
+.venv/
+data/
+models/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.token
+*.key
+*.pem
+*.sqlite3*
+*.zip
+.env*

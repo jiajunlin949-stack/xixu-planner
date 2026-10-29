@@ -68,11 +68,11 @@
   async function archiveSelectedBytes(file,index,selection){
     if(window.XixuFile){
       const info=JSON.parse(window.XixuFile.begin(index));if(selection.id!==undefined&&info.selectionId!==selection.id)throw Error('文件选择已变化，请重新选择');if(info.selectionId!==undefined)selection.id=info.selectionId;
-      const size=Number(info.size);if(!Number.isInteger(size)||size<1||size>ARCHIVE_FILE_LIMIT)throw Error('单个 HTML 必须小于等于 20 MiB');
+      const size=Number(info.size);if(!Number.isInteger(size)||size<1||size>ARCHIVE_FILE_LIMIT)throw Error('单个原文件必须小于等于 20 MiB');
       const bytes=new Uint8Array(size);let offset=0;
       while(offset<size){const chunk=archiveUnbase64(window.XixuFile.readChunk(256*1024));if(!chunk.length||offset+chunk.length>size)throw Error('文件读取不完整，未导入');bytes.set(chunk,offset);offset+=chunk.length;await archiveYield()}return bytes;
     }
-    if(!file.size||file.size>ARCHIVE_FILE_LIMIT)throw Error('单个 HTML 必须小于等于 20 MiB');return new Uint8Array(await file.arrayBuffer());
+    if(!file.size||file.size>ARCHIVE_FILE_LIMIT)throw Error('单个原文件必须小于等于 20 MiB');return new Uint8Array(await file.arrayBuffer());
   }
   async function parseArchiveHtml(bytes,fileName){
     let raw;
@@ -145,7 +145,8 @@
     const note=notes.find(item=>item.id===id);if(!note?.archive||panel?.editArchive)return memoryWithoutArchive(id);
     const archive=note.archive;
     const addedImages=normalizeAttachments(note.images);
-    return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。</div><article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article><p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">导出原始 HTML</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
+    const originalLabel=archive.version===2?'导出原文件':'导出原始 HTML',notice=archive.version===2?'保留原始 '+esc(archive.format.toUpperCase())+' 文件与 '+archive.images.length+' 张阅读图片。文字视图用于检索，原文档版式以原文件为准。':'保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。';
+    return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">'+notice+'</div>'+(archive.warnings||[]).map(text=>'<p class="tide-note">'+esc(text)+'</p>').join('')+'<article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article><p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">'+originalLabel+'</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
   };
   async function hydrateNoteArchive(){
     const article=main.querySelector('.xixu-archive-content');
@@ -181,7 +182,7 @@
     try{
       await archiveRead(note.archive.originalHash);
       if(window.XixuArchive){if(!window.XixuArchive.exportFile(note.archive.originalHash,note.archive.fileName))throw Error('没有取得原件导出权限')}
-      else{const bytes=await archiveRead(note.archive.originalHash),url=URL.createObjectURL(new Blob([bytes],{type:'text/html'})),link=document.createElement('a');link.href=url;link.download=note.archive.fileName;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+      else{const bytes=await archiveRead(note.archive.originalHash),url=URL.createObjectURL(new Blob([bytes],{type:documentMime(note.archive.fileName)})),link=document.createElement('a');link.href=url;link.download=note.archive.fileName;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
     }catch(error){notify(error.message)}
   },true);
   root.addEventListener('submit',async event=>{

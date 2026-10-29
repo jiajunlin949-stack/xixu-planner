@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 const web = path.join(root, 'xixu-harmony/web');
 const raw = path.join(root, 'xixu-harmony/entry/src/main/resources/rawfile');
 // Exercise current production modules without rewriting generated resources.
-const moduleNames = ['data-reminders.js', 'course-ocr.js', 'ai-assistant.js', 'home.js', 'productivity.js', 'note-archive.js', 'rag.js', 'knowledge.js', 'agent.js'];
+const moduleNames = JSON.parse(fs.readFileSync(path.join(web, 'modules', 'manifest.json'), 'utf8'));
 const runtime = moduleNames.map(name => fs.readFileSync(path.join(web, 'modules', name), 'utf8')).join('\n');
 const shell = fs.readFileSync(path.join(web, 'modules/shell.js'), 'utf8');
 const insertion = '  function applyDesign(){';

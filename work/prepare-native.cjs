@@ -4,7 +4,7 @@ const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile');
 fs.mkdirSync(raw,{recursive:true});
 fs.mkdirSync(path.join(raw,'cmaps'),{recursive:true});
 
-const moduleFiles=['data-reminders.js','course-ocr.js','ai-assistant.js','home.js','productivity.js','note-archive.js','rag.js','knowledge.js','agent.js'];
+const moduleFiles=JSON.parse(fs.readFileSync(path.join(web,'modules','manifest.json'),'utf8'));
 const shell=fs.readFileSync(path.join(web,'modules','shell.js'),'utf8');
 const runtime=moduleFiles.map(file=>fs.readFileSync(path.join(web,'modules',file),'utf8')).join('\n');
 const motion=fs.readFileSync(path.join(web,'motion.js'),'utf8');
@@ -18,11 +18,13 @@ const css=['base.css','motion.css','modules/productivity.css','editorial.css','m
 fs.writeFileSync(path.join(raw,'app.css'),css);
 let markup=fs.readFileSync(path.join(web,'base.html'),'utf8');
 markup=markup.replace('初版体验','内测版').replace('Xixu · campus planner','汐序 · 校园日程手机原型').replace(/<i data-lucide="waves"[^>]*><\/i>/,'<img src="icon.png" alt="">');
-const html='<!doctype html>\n<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta http-equiv="Content-Security-Policy" content="default-src \'self\' resource:; script-src \'self\' resource:; worker-src \'self\' resource: blob:; style-src \'self\' resource: \'unsafe-inline\'; img-src \'self\' resource: data: blob:; connect-src \'self\' resource:"><title>汐序</title><link rel="stylesheet" href="app.css"></head><body><div id="xixu-save-error" role="alert" hidden></div>'+markup+'<script src="lucide.min.js"></script><script src="xlsx.full.min.js"></script><script src="pdf.min.js"></script><script src="hyalite.js"></script><script src="app.js"></script></body></html>';
+const html='<!doctype html>\n<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta http-equiv="Content-Security-Policy" content="default-src \'self\' resource:; script-src \'self\' resource:; worker-src \'self\' resource: blob:; style-src \'self\' resource: \'unsafe-inline\'; img-src \'self\' resource: data: blob:; connect-src \'self\' resource:"><title>汐序</title><link rel="stylesheet" href="app.css"></head><body><div id="xixu-save-error" role="alert" hidden></div>'+markup+'<script src="lucide.min.js"></script><script src="xlsx.full.min.js"></script><script src="pdf.min.js"></script><script src="fflate.min.js"></script><script src="hyalite.js"></script><script src="app.js"></script></body></html>';
 fs.writeFileSync(path.join(raw,'index.html'),html);
 fs.copyFileSync(path.join(web,'vendor','lucide.min.js'),path.join(raw,'lucide.min.js'));
 fs.copyFileSync(path.join(web,'vendor','xlsx.full.min.js'),path.join(raw,'xlsx.full.min.js'));
 fs.copyFileSync(path.join(web,'vendor','pdf.min.js'),path.join(raw,'pdf.min.js'));
+fs.copyFileSync(path.join(web,'vendor','fflate.min.js'),path.join(raw,'fflate.min.js'));
+fs.copyFileSync(path.join(web,'vendor','FFLATE-LICENSE'),path.join(raw,'FFLATE-LICENSE'));
 fs.copyFileSync(path.join(web,'vendor','pdf.worker.min.js'),path.join(raw,'pdf.worker.min.js'));
 // ArkWeb's resource:// scheme is not fetchable in every PDF worker. Keep the
 // packaged CMaps available without an XHR/fetch dependency on that scheme.
