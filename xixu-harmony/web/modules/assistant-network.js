@@ -98,9 +98,6 @@
       catch(error){assistantResolveModel(id,error)}
     });
   }
-  function assistantKnowledgeCall(operation,payload,request){
-    return new Promise((resolve,reject)=>{const id='knowledge_'+Date.now()+'_'+(++knowledgeSequence),timer=setTimeout(()=>{knowledgePending.delete(id);window.XixuKnowledge?.cancel?.(id);reject(Error('电脑连接超时，请检查电脑状态'))},45000);request.knowledgeId=id;knowledgePending.set(id,{resolve,reject,timer});try{if(!window.XixuKnowledge?.call?.(id,operation,JSON.stringify(payload)))throw Error('电脑接口尚未就绪')}catch(error){clearTimeout(timer);knowledgePending.delete(id);reject(error)}});
-  }
   function assistantPreviewText(text){
     const match=/"answer"\s*:\s*"((?:\\.|[^"\\])*)/.exec(text);if(!match)return text.startsWith('{')?'正在整理回答……':text;
     let candidate=match[1];if(candidate.endsWith('\\'))candidate=candidate.slice(0,-1);try{return JSON.parse('"'+candidate+'"')}catch(_){return '正在整理回答……'}
@@ -125,7 +122,7 @@
     request.approvedQuery=approved.query;request.approvedLocalRefs=approved.refs;
     if(request!==agentRequest)return null;request.route='computer-retrieval';
     if(approved.query.length>2000)throw Error('电脑单次查询上限为 2000 字符，请拆分问题后重试');
-    const prepared=await assistantKnowledgeCall('chat-prepare',{query:approved.query,local_context:approved.refs.map(ref=>ref.text),conversation_id:'xixu-'+request.conversationId,limit:5},request);
+    const prepared=await knowledgeCall('chat-prepare',{query:approved.query,local_context:approved.refs.map(ref=>ref.text),conversation_id:'xixu-'+request.conversationId,limit:5},request);
     if(request!==agentRequest)return null;
     const remote=knowledgeReferences(prepared.source_refs||[]).map((ref,index)=>({...ref,cloudIndex:index+1,title:prepared.sources?.[index]?.title||assistantMask(ref.title),text:prepared.sources?.[index]?.text||assistantMask(ref.text)}));
     if(assistantLocalEnough(approved.query,remote))return {answer:localAgentAnswer(approved.query,remote),refs:remote,action:{type:'none'},source:'computer',tool:'search_notes'};
@@ -154,7 +151,7 @@
     if(agentEditingId){const index=agentHistory.findIndex(item=>item.id===agentEditingId&&String(item.conversationId||'default')===conversationId);if(index>=0){userId=agentEditingId;agentHistory[index].text=query;if(agentHistory[index+1]?.role==='assistant')agentHistory.splice(index+1,1)}agentEditingId=''}
     if(!agentHistory.some(item=>item.id===userId))agentHistory.push({id:userId,conversationId,role:'user',text:query,source:'local',createdAt:now});
     agentInputDraft='';saveAgentInput();agentConversationMetadata()[conversationId]={...agentPreferences.conversations[conversationId],createdAt:agentPreferences.conversations[conversationId]?.createdAt||now,updatedAt:now};
-    const request={conversationId,userId,query,refs:[],stage:'local',started:performance.now(),route:'rule',day:DEMO_DAY};agentRequest=request;agentPending=true;agentRequestActive=false;agentDraft={answer:'',refs:[],action:{type:'none'},source:'local'};agentConversationResults.set(conversationId,agentDraft);persist();render(false);
+    const request={conversationId,userId,query,refs:[],stage:'local',started:performance.now(),route:'rule',day:DEMO_DAY};agentRequest=request;agentPending=true;agentDraft={answer:'',refs:[],action:{type:'none'},source:'local'};agentConversationResults.set(conversationId,agentDraft);persist();render(false);
     const finish=result=>{if(request===agentRequest)finishAgent(query,result,request)};
     try{
       if(local){finish(local);return}
@@ -176,34 +173,35 @@
       const text=await assistantModelCall(profile,messages,{structured:true,request});if(request!==agentRequest)return;finish(assistantNormalizeModel(text,approved.refs));
     }catch(error){finish({answer:'本次处理未完成：'+String(error.message||'请重试')+'。没有执行日程修改，原问题仍在对话中。',refs:request.refs,action:{type:'none'},source:'local',error:true})}
   }
-  root.addEventListener('submit',event=>{if(event.target.id!=='xixu-agent-form')return;event.preventDefault();event.stopImmediatePropagation();assistantSubmitAgent(event.target)},true);
+  root.addEventListener('submit',event=>{if(event.target.id!=='xixu-agent-form')return;event.preventDefault();event.stopImmediatePropagation();assistantSubmitAgent(event.target)});
   function assistantStop(){
     const request=agentRequest;if(!request)return;assistantCancelPrivacy();if(assistantSheet?.kind==='privacy')assistantCloseSheet();
     if(request.modelId)assistantResolveModel(request.modelId,Error('已停止'));
-    if(request.knowledgeId){window.XixuKnowledge?.cancel?.(request.knowledgeId);const pending=knowledgePending.get(request.knowledgeId);if(pending){clearTimeout(pending.timer);knowledgePending.delete(request.knowledgeId);pending.reject(Error('已停止'))}}
+    if(request.knowledgeId)cancelKnowledgeRequest(request.knowledgeId);
     request.cancelled=true;finishAgent(request.query,{answer:'已停止本次处理。问题保留在对话里，没有执行日程修改。',refs:request.refs||[],action:{type:'none'},source:'local',cancelled:true},request);
   }
-  function assistantLegacyModelRequest(payload,callback){
-    if(!window.XixuModels)return false;
+  function assistantRequestStructuredModel(messages,receive){
+    if(!window.XixuModels||!Array.isArray(messages)||typeof receive!=='function')return false;
     (async()=>{
-      const profile=assistantModelConfig(),old=JSON.parse(payload),messages=old.messages||[],vision=messages.some(item=>Array.isArray(item.content)&&item.content.some(part=>part.type==='image_url'));
+      const profile=assistantModelConfig(),vision=messages.some(item=>Array.isArray(item.content)&&item.content.some(part=>part.type==='image_url'));
       if(vision&&!profile.capabilities?.vision)throw Error('所选模型未确认支持图片，请先在模型设置核对');
       const textParts=[],pictures=[];
       for(const message of messages){if(typeof message.content==='string')textParts.push({role:message.role,content:message.content});else for(const part of message.content||[]){if(part.type==='image_url'){pictures.push(part.image_url.url)}else if(part.text)textParts.push({role:message.role,content:part.text})}}
       // Images cannot be meaningfully auto-redacted: display exactly what will leave.
-      if(pictures.length){await new Promise(resolve=>{assistantShowSheet('核对将发送的图片','<p>图片内的姓名、课表等不会自动打码。只有你明确继续，图片才发送至 '+esc(profile.base_url)+'。</p>'+pictures.map(src=>'<img class="xixu-outbound-image" src="'+esc(src)+'" alt="待核对的图片">').join('')+'<button class="tide-primary" data-action="assistant-vision-approved">我已核对这些图片</button>','vision');assistantVisionApproval=resolve});if(!assistantVisionAccepted)throw Error('已取消图片发送')}
+      if(pictures.length){const accepted=await new Promise(resolve=>{assistantShowSheet('核对将发送的图片','<p>图片内的姓名、课表等不会自动打码。只有你明确继续，图片才发送至 '+esc(profile.base_url)+'。</p>'+pictures.map(src=>'<img class="xixu-outbound-image" src="'+esc(src)+'" alt="待核对的图片">').join('')+'<button class="tide-primary" data-action="assistant-vision-approved">我已核对这些图片</button>','vision');assistantVisionApproval=resolve});if(!accepted)throw Error('已取消图片发送')}
       const approved=await assistantApprove({destination:profile.base_url,model:profile.model,query:textParts.at(-1)?.content||'请整理',history:textParts.slice(0,-1)});if(!approved)throw Error('已取消发送');
       const outgoing=[...approved.history,{role:'user',content:pictures.length?[{type:'text',text:approved.query},...pictures.map(url=>({type:'image_url',image_url:{url}}))]:approved.query}],text=await assistantModelCall(profile,outgoing,{structured:true,vision});
-      window[callback]?.(true,200,JSON.stringify({choices:[{message:{content:text}}]}));
-    })().catch(error=>window[callback]?.(false,0,String(error.message||'请求未完成')));return true;
+      receive(true,200,JSON.stringify({choices:[{message:{content:text}}]}));
+    })().catch(error=>receive(false,0,String(error.message||'请求未完成')));return true;
   }
-  let assistantVisionApproval=null,assistantVisionAccepted=false;
-  const closeBeforeVision=assistantCloseSheet;
-  assistantCloseSheet=function(){if(assistantSheet?.kind==='vision'&&assistantVisionApproval){assistantVisionAccepted=false;const resolve=assistantVisionApproval;assistantVisionApproval=null;resolve(false)}return closeBeforeVision()};
-  renderAiSettings=function(){const config=assistantModelConfig();return top('模型连接')+'<p>保存配置不会自动发送测试请求。密钥保存在手机安全存储中，不进入资料备份。</p><form id="xixu-provider-form" class="tide-form"><label class="tide-field">供应商<select name="provider">'+XIXU_PROVIDER_CATALOG.providers.map(item=>'<option value="'+item.id+'" '+(item.id===config.provider?'selected':'')+'>'+esc(item.label)+'</option>').join('')+'</select></label><label class="tide-field">HTTPS 接口地址<input name="base_url" required value="'+esc(config.base_url||'')+'" maxlength="500"></label><label class="tide-field">协议<select name="api">'+['chat','responses','messages'].map(api=>'<option value="'+api+'" '+(config.api===api?'selected':'')+'>'+({chat:'Chat Completions',responses:'Responses',messages:'Claude Messages'})[api]+'</option>').join('')+'</select></label><label class="tide-field">模型名称<input name="model" required maxlength="150" value="'+esc(config.model||'')+'"></label><label class="tide-field">API Key<input name="api_key" type="password" autocomplete="off" maxlength="500" placeholder="留空保留该供应商已保存的 Key"></label><label class="xixu-check-line"><input name="clear_key" type="checkbox">移除该供应商 Key</label><details><summary>按所选模型确认能力</summary>'+['stream','structured','vision','tools','reasoning'].map(key=>'<label class="xixu-check-line"><input type="checkbox" name="'+key+'" '+(config.capabilities?.[key]?'checked':'')+'>'+({stream:'流式回复',structured:'JSON 结构输出',vision:'图片理解',tools:'工具参数能力（不自动执行）',reasoning:'推理模型'})[key]+'</label>').join('')+'<p>能力标记不等于已通过验证；当前不强塞供应商特有推理参数。工具目录由应用校验，不是任意远程执行。</p><label class="tide-field">Chat 输出长度字段<select name="output_token_field"><option value="max_tokens">max_tokens</option><option value="max_completion_tokens" '+(config.output_token_field==='max_completion_tokens'?'selected':'')+'>max_completion_tokens</option></select></label></details><button class="tide-primary tide-full">保存配置</button></form>'};
+  let assistantVisionApproval=null;
+  function assistantCancelVision(){
+    const resolve=assistantVisionApproval;assistantVisionApproval=null;resolve?.(false);
+  }
+  function renderAiSettings(){const config=assistantModelConfig();return top('模型连接')+'<p>保存配置不会自动发送测试请求。密钥保存在手机安全存储中，不进入资料备份。</p><form id="xixu-provider-form" class="tide-form"><label class="tide-field">供应商<select name="provider">'+XIXU_PROVIDER_CATALOG.providers.map(item=>'<option value="'+item.id+'" '+(item.id===config.provider?'selected':'')+'>'+esc(item.label)+'</option>').join('')+'</select></label><label class="tide-field">HTTPS 接口地址<input name="base_url" required value="'+esc(config.base_url||'')+'" maxlength="500"></label><label class="tide-field">协议<select name="api">'+['chat','responses','messages'].map(api=>'<option value="'+api+'" '+(config.api===api?'selected':'')+'>'+({chat:'Chat Completions',responses:'Responses',messages:'Claude Messages'})[api]+'</option>').join('')+'</select></label><label class="tide-field">模型名称<input name="model" required maxlength="150" value="'+esc(config.model||'')+'"></label><label class="tide-field">API Key<input name="api_key" type="password" autocomplete="off" maxlength="500" placeholder="留空保留该供应商已保存的 Key"></label><label class="xixu-check-line"><input name="clear_key" type="checkbox">移除该供应商 Key</label><details><summary>按所选模型确认能力</summary>'+['stream','structured','vision','tools','reasoning'].map(key=>'<label class="xixu-check-line"><input type="checkbox" name="'+key+'" '+(config.capabilities?.[key]?'checked':'')+'>'+({stream:'流式回复',structured:'JSON 结构输出',vision:'图片理解',tools:'工具参数能力（不自动执行）',reasoning:'推理模型'})[key]+'</label>').join('')+'<p>能力标记不等于已通过验证；当前不强塞供应商特有推理参数。工具目录由应用校验，不是任意远程执行。</p><label class="tide-field">Chat 输出长度字段<select name="output_token_field"><option value="max_tokens">max_tokens</option><option value="max_completion_tokens" '+(config.output_token_field==='max_completion_tokens'?'selected':'')+'>max_completion_tokens</option></select></label></details><button class="tide-primary tide-full">保存配置</button></form>'}
   root.addEventListener('change',event=>{if(event.target.name!=='provider'||!event.target.closest('#xixu-provider-form'))return;const preset=assistantModelConfig().profiles?.find(item=>item.provider===event.target.value)||XIXU_PROVIDER_CATALOG.providers.find(item=>item.id===event.target.value),form=event.target.form;if(!preset)return;for(const name of ['base_url','api','model'])form.elements[name].value=preset[name];form.elements.api_key.value='';for(const key of Object.keys(XIXU_PROVIDER_CATALOG.defaultCapabilities))form.elements[key].checked=(preset.capabilities||XIXU_PROVIDER_CATALOG.defaultCapabilities)[key]});
   root.addEventListener('submit',event=>{if(event.target.id!=='xixu-provider-form')return;event.preventDefault();event.stopImmediatePropagation();const data=new FormData(event.target),config={};for(const key of ['provider','base_url','api','model','output_token_field'])config[key]=String(data.get(key)||'').trim();config.capabilities=Object.fromEntries(['stream','structured','vision','tools','reasoning'].map(key=>[key,data.has(key)]));config.clear_key=data.has('clear_key');const key=String(data.get('api_key')||'').trim();if(key)config.api_key=key;try{if(!window.XixuModels?.save?.(JSON.stringify(config)))throw Error('未保存，请检查 HTTPS 地址、模型名称和密钥');event.target.elements.api_key.value='';render(false);notify('配置已保存，尚未发送请求')}catch(error){notify(error.message)}},true);
   root.addEventListener('click',event=>{const action=event.target.closest('[data-action]')?.dataset.action;if(action==='assistant-approve-send')assistantFinishPrivacy();else if(action==='assistant-stop')assistantStop();else if(action==='assistant-mask-terms'){const terms=String(root.querySelector('#assistant-private-terms')?.value||'').split(/[,，\n]/).map(term=>term.trim()).filter(Boolean);for(const field of root.querySelectorAll('.xixu-assistant-sheet textarea'))for(const term of terms)field.value=field.value.split(term).join('[已隐藏]');if(assistantPrivacy)assistantPrivacy.prepared.refs.forEach((ref,index)=>{for(const term of terms)ref.title=ref.title.split(term).join('[已隐藏]');const title=root.querySelector('[data-approval-source-title="'+index+'"]');if(title)title.textContent=ref.title})}
-    else if(action==='assistant-vision-approved'){assistantVisionAccepted=true;const resolve=assistantVisionApproval;assistantVisionApproval=null;assistantCloseSheet();resolve?.(true)}
+    else if(action==='assistant-vision-approved'){const resolve=assistantVisionApproval;assistantVisionApproval=null;assistantCloseSheet();resolve?.(true)}
   },true);
-  window.addEventListener('pagehide',()=>{assistantCancelPrivacy();for(const id of [...assistantModelPending.keys()])assistantResolveModel(id,Error('页面已关闭'))});
+  window.addEventListener('pagehide',()=>{assistantCancelPrivacy();assistantCancelVision();for(const id of [...assistantModelPending.keys()])assistantResolveModel(id,Error('页面已关闭'))});

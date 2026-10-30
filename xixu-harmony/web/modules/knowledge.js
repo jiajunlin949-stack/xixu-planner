@@ -3,14 +3,24 @@
   function knowledgeStatus(){try{return JSON.parse(window.XixuKnowledge?.status?.()||'{}')}catch(_){return {paired:false}}}
   function knowledgeMode(){try{const saved=localStorage.getItem('xixu-knowledge-mode');if(['local','extended'].includes(saved))return saved}catch(_){}return knowledgeStatus().paired?'extended':'local'}
   function knowledgeEnabled(){return knowledgeMode()==='extended'&&knowledgeStatus().paired}
-  function knowledgeCall(operation,payload={}){
+  function knowledgeCall(operation,payload={},context=null){
     return new Promise((resolve,reject)=>{
       const id='knowledge_'+Date.now()+'_'+(++knowledgeSequence);
-      const timer=setTimeout(()=>{knowledgePending.delete(id);reject(Error('电脑连接超时，请检查电脑是否仍在运行。'))},operation==='chat'?135000:45000);
+      const timeout=['chat','chat-confirm'].includes(operation)?135000:45000;
+      const timer=setTimeout(()=>cancelKnowledgeRequest(id,'电脑连接超时，请检查电脑是否仍在运行。'),timeout);
       knowledgePending.set(id,{resolve,reject,timer});
-      try{if(!window.XixuKnowledge?.call?.(id,operation,JSON.stringify(payload)))throw Error('电脑知识库接口尚未就绪，请更新汐序。')}
-      catch(error){clearTimeout(timer);knowledgePending.delete(id);reject(error)}
+      if(context)context.knowledgeId=id;
+      try{
+        if(!window.XixuKnowledge?.call?.(id,operation,JSON.stringify(payload)))throw Error('电脑知识库接口尚未就绪，请更新汐序。');
+      }catch(error){clearTimeout(timer);knowledgePending.delete(id);reject(error)}
     });
+  }
+  function cancelKnowledgeRequest(id,message='已停止'){
+    const pending=knowledgePending.get(id);if(!pending)return false;
+    clearTimeout(pending.timer);knowledgePending.delete(id);
+    try{window.XixuKnowledge?.cancel?.(id)}catch(_){}
+    pending.reject(Error(message));
+    return true;
   }
   window.XixuReceiveKnowledge=(id,ok,body)=>{
     const request=knowledgePending.get(id);if(!request)return;
@@ -25,21 +35,6 @@
       text:String(source.text||'').slice(0,900),recordType:'external',kind:'电脑资料',action:'knowledge-source',
       chunkStart:source.start,chunkEnd:source.end,sourceExcerpt:true,score:source.score||0,reasons:['电脑知识库检索']
     }));
-  }
-  async function knowledgeAnswer(query,refs,conversationId){
-    if(!knowledgeEnabled())return null;
-    let room=4800;const local=[];
-    for(const ref of refs.slice(0,2)){const text='汐序本机资料：'+ref.title+'\n'+String(ref.text||'');const clipped=text.slice(0,Math.min(1200,room));if(clipped){local.push(clipped);room-=clipped.length}}
-    let result;
-    try{result=await knowledgeCall('chat',{query,conversation_id:'xixu-'+conversationId,local_context:local})}
-    catch(error){
-      if(!String(error.message).includes('模型尚未就绪'))throw error;
-      const found=await knowledgeCall('search',{query,limit:6});
-      result={answer:found.results?.length?'从电脑找到了 '+found.results.length+' 个资料片段。电脑模型尚未就绪，可以展开来源查看原文。':'电脑知识库暂未找到相关片段。',answer_generated:false,sources:found.results||[]};
-    }
-    const remote=knowledgeReferences(result.sources);
-    return {answer:String(result.answer||'电脑没有返回回答。')+(result.answer_generated?'':'\n（本次未调用回答模型）'),
-      refs:[...remote,...refs.slice(0,Math.max(0,6-remote.length))],action:{type:'none'},source:'computer'};
   }
   function knowledgeSettingsHtml(){
     const status=knowledgeStatus();

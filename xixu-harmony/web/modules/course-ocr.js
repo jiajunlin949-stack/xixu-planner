@@ -49,10 +49,10 @@
     const reviewIndexes=relevantOld.length?changedIndexes:importCandidate.lessons.map((_,index)=>index);
     const reviewPeriodCount=Math.max(scheduleSettings.count,importCandidate.detectedSchedule?.count||0,...importCandidate.lessons.flatMap(item=>String(item.period||'').match(/\d+/g)?.map(Number)||[]));
     const rows=reviewIndexes.map(index=>{const lesson=importCandidate.lessons[index],c=importCandidate.courses.find(item=>item.id===lesson.course),start=Number(String(lesson.period||'').match(/\d+/)?.[0])||Number(blocks[lesson.block].period.match(/\d+/)?.[0])||1,end=Number(String(lesson.period||'').match(/\d+/g)?.at(-1))||start;return '<fieldset><legend><label><input type="checkbox" name="keep-'+index+'" checked> 应用这项变化</label></legend><label class="tide-field">课程名称<input name="course-'+index+'" value="'+esc(c?.name||'')+'" required maxlength="80"></label><label class="tide-field">教室<input name="room-'+index+'" value="'+esc(!lesson.room||lesson.room==='教室待确认'?'教室待确认':lesson.room)+'" required maxlength="80"></label><div class="tide-form-row"><label class="tide-field">星期<select name="day-'+index+'">'+['周一','周二','周三','周四','周五','周六','周日'].map((dayName,day)=>'<option value="'+day+'" '+(day===lesson.day?'selected':'')+'>'+dayName+'</option>').join('')+'</select></label><label class="tide-field">开始节次<select name="start-'+index+'">'+Array.from({length:reviewPeriodCount},(_,i)=>'<option value="'+(i+1)+'" '+(i+1===start?'selected':'')+'>'+(i+1)+'</option>').join('')+'</select></label><label class="tide-field">结束节次<select name="end-'+index+'">'+Array.from({length:reviewPeriodCount},(_,i)=>'<option value="'+(i+1)+'" '+(i+1===end?'selected':'')+'>'+(i+1)+'</option>').join('')+'</select></label></div></fieldset>'}).join('');
-    const aiAvailable=Boolean(window.XixuAI?.hasKey?.());
-    const aiAction=ocrImageDataUrl?'<button type="button" class="tide-secondary tide-full" data-action="ai-check-timetable" '+(ocrVisionPending?'disabled':'')+'>'+icon(ocrVisionPending?'loader-circle':'scan-search')+(ocrVisionPending?'DeepSeek 正在检查图片…':aiAvailable?'再次使用 DeepSeek 检查':'添加 DeepSeek 密钥后检查')+'</button>':'';
+    const aiAvailable=aiHasKey();
+    const aiAction=ocrImageDataUrl?'<button type="button" class="tide-secondary tide-full" data-action="ai-check-timetable" '+(ocrVisionPending?'disabled':'')+'>'+icon(ocrVisionPending?'loader-circle':'scan-search')+(ocrVisionPending?'模型 正在检查图片…':aiAvailable?'再次使用 模型 检查':'添加 模型 密钥后检查')+'</button>':'';
     const editor=rows?'<div class="xixu-ocr-confidence">'+icon('pencil-line')+'<div><strong>发现这些变化</strong><span>可编辑课程、教室、星期或节次。截图以外的课程会保持不变。</span></div></div><form id="xixu-ocr-review-form" class="tide-form">'+rows+'<button class="tide-secondary tide-full" type="submit">应用变化并再次检查</button></form>':'<div class="tide-note">没有发现变化。截图以外的课程会保持不变。</div>';
-    return summary+detectedOption+editor+aiAction+(ocrImageDataUrl?'<div class="tide-note">只有点击按钮后才会发送这张课表图片进行检查，DeepSeek API 可能产生少量费用。</div>':'')+'<button class="tide-primary tide-full" data-action="confirm-timetable">更新课表</button>';
+    return summary+detectedOption+editor+aiAction+(ocrImageDataUrl?'<div class="tide-note">只有点击按钮后才会发送这张课表图片进行检查，模型 API 可能产生少量费用。</div>':'')+'<button class="tide-primary tide-full" data-action="confirm-timetable">更新课表</button>';
   }
   function ocrBounds(lines) {
     const points=lines.flatMap(line=>Array.isArray(line.cornerPoints)?line.cornerPoints:[]).filter(point=>Number.isFinite(point.x)&&Number.isFinite(point.y));
@@ -413,10 +413,10 @@
       notify('课表图片已识别，请检查后再更新。');
     }catch(error){importCandidate=null;if(box)box.textContent='无法识别：'+error.message;notify('课表图片无法识别。');}
   };
-  function timetableVisionPayload(dataUrl){
+  function timetableVisionMessages(dataUrl){
     const schema='{"week":3,"lessons":[{"courseName":"课程完整名称","room":"教室或待确认","weekday":0,"startPeriod":1,"endPeriod":2}]}';
     const instruction='读取这张大学课表截图，只输出合法 JSON，不解释。必须逐列逐行读取所有当前周有课的彩色课程块；灰色且标有“非本周”的课程不要加入。星期一为 weekday 0，星期日为 6。startPeriod/endPeriod 使用图片左侧的真实节次，不预设学校或总节数。课程名必须把换行拆开的文字合并完整，教室必须与课程分开；看不清教室时写“教室待确认”，不要猜。JSON 格式：'+schema;
-    return JSON.stringify({model:'deepseek-flash',messages:[{role:'system',content:'你是严格的大学课表结构化识别器，只返回 JSON。'},{role:'user',content:[{type:'text',text:instruction},{type:'image_url',image_url:{url:dataUrl,detail:'original'}}]}],response_format:{type:'json_object'},thinking:{type:'disabled'},temperature:0,max_tokens:3000,stream:false});
+    return [{role:'system',content:'你是严格的大学课表结构化识别器，只返回 JSON。'},{role:'user',content:[{type:'text',text:instruction},{type:'image_url',image_url:{url:dataUrl,detail:'original'}}]}];
   }
   function visionCandidate(value){
     const rawLessons=Array.isArray(value?.lessons)?value.lessons:[],recognized=[],names=new Set();
@@ -427,7 +427,7 @@
       const used=[...new Set(Array.from({length:end-start+1},(_,index)=>periodBlockIndex(start+index)).filter(Number.isInteger))];
       names.add(name);recognized.push({name,room,day,block,spans:used.length>1?used:undefined,end:periodEnd(end),period:start===end?String(start):start+'–'+end,confidence:.9,sourceName:name,sourceRoom:room});
     }
-    if(!recognized.length)throw Error('DeepSeek 没有找到可用课程。');
+    if(!recognized.length)throw Error('模型 没有找到可用课程。');
     const detected=Number(value?.week),target=Number.isInteger(detected)&&detected>=1&&detected<=20?detected:ocrWeek;
     const visionCourses=[...names].map((name,index)=>({id:'vision-'+index,name,short:name,mark:name.slice(0,1),image:null,source:'ocr'})),ids=new Map(visionCourses.map(item=>[item.name,item.id]));
     const visionLessons=recognized.map(item=>{const {name,...lesson}=item;return {...lesson,course:ids.get(name),weeks:[target],rule:'第 '+target+' 周 · AI 图片校对'}});
@@ -437,9 +437,9 @@
     ocrVisionPending=false;const box=main.querySelector('#xixu-ocr-review');
     try{
       if(!ok){let message=body;try{message=JSON.parse(body).error?.message||body}catch(_){}throw Error(status===401?'API 密钥无效或额度不足。':message)}
-      const response=JSON.parse(body),content=response.choices?.[0]?.message?.content;if(!content)throw Error('DeepSeek 没有返回结果。');
+      const response=JSON.parse(body),content=response.choices?.[0]?.message?.content;if(!content)throw Error('模型 没有返回结果。');
       const detectedSchedule=importCandidate?.detectedSchedule||null,parsed=visionCandidate(JSON.parse(content.replace(/^```json\s*|\s*```$/g,'')));parsed.detectedSchedule=detectedSchedule;ocrWeek=parsed.ocrWeek;importMode='ocr';importCandidate=checkData(parsed,true);importCandidate.ocrWeek=ocrWeek;importCandidate.weekDetected=parsed.weekDetected;
-      if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · DeepSeek 图片检查完成');icons();notify('AI 检查完成，请逐项确认后保存。');
+      if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 模型 图片检查完成');icons();notify('AI 检查完成，请逐项确认后保存。');
     }catch(error){if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 保留本机识别结果');icons();notify('AI 检查失败：'+String(error?.message||error));}
   };
   root.addEventListener('change',async event=>{
@@ -485,9 +485,9 @@
   root.addEventListener('click',event=>{
     const aiButton=event.target.closest('[data-action="ai-check-timetable"]');
     if(aiButton){
-      if(!window.XixuAI?.hasKey?.()){openPanel({kind:'ai-settings'});notify('请先保存并测试 DeepSeek 密钥，再回来检查课表。');return}
+      if(!aiHasKey()){openPanel({kind:'ai-settings'});notify('请先保存模型连接配置，再回来检查课表。');return}
       if(!ocrImageDataUrl||ocrVisionPending)return;ocrVisionPending=true;const box=main.querySelector('#xixu-ocr-review');if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 正在检查原图');icons();
-      try{if(!assistantLegacyModelRequest(timetableVisionPayload(ocrImageDataUrl),'XixuReceiveTimetableAI')){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查请求未发送。')}}catch(_){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查连接失败。');}
+      try{if(!assistantRequestStructuredModel(timetableVisionMessages(ocrImageDataUrl),window.XixuReceiveTimetableAI)){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查请求未发送。')}}catch(_){ocrVisionPending=false;if(box)box.innerHTML=importReviewHtml('第 '+ocrWeek+' 周 · 本机识别结果');icons();notify('AI 检查连接失败。');}
       return;
     }
     if(event.target.closest('[data-action="confirm-timetable"]')&&importCandidate&&!storageBlocked){

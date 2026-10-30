@@ -1,8 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
-import { http } from '@kit.NetworkKit';
-import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { textRecognition } from '@kit.CoreVisionKit';
@@ -202,97 +200,6 @@ class SelectedFileBridge {
     this.closeActive();
     this.selectedUris = [];
     return true;
-  }
-}
-
-class DeepSeekBridge {
-  private controller: webview.WebviewController;
-  private readonly encoder: util.TextEncoder = new util.TextEncoder();
-  private readonly decoder: util.TextDecoder = new util.TextDecoder();
-  private readonly alias: Uint8Array = this.encoder.encodeInto('xixu.deepseek.api-key');
-
-  constructor(controller: webview.WebviewController) { this.controller = controller; }
-
-  private readKey(): string {
-    try {
-      const query: asset.AssetMap = new Map();
-      query.set(asset.Tag.ALIAS, this.alias);
-      query.set(asset.Tag.RETURN_TYPE, asset.ReturnType.ALL);
-      const result = asset.querySync(query);
-      if (result.length === 0) { return ''; }
-      const secret = result[0].get(asset.Tag.SECRET) as Uint8Array;
-      return this.decoder.decodeToString(secret);
-    } catch (_) { return ''; }
-  }
-
-  hasKey(): boolean { return this.readKey().length > 0; }
-
-  saveKey(value: string): boolean {
-    const key = value.trim();
-    if (key.length < 12 || key.length > 300) { return false; }
-    try {
-      const attributes: asset.AssetMap = new Map();
-      attributes.set(asset.Tag.ALIAS, this.alias);
-      attributes.set(asset.Tag.SECRET, this.encoder.encodeInto(key));
-      attributes.set(asset.Tag.ACCESSIBILITY, asset.Accessibility.DEVICE_FIRST_UNLOCKED);
-      attributes.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
-      asset.addSync(attributes);
-      return true;
-    } catch (_) { return false; }
-  }
-
-  deleteKey(): boolean {
-    try {
-      const query: asset.AssetMap = new Map();
-      query.set(asset.Tag.ALIAS, this.alias);
-      asset.removeSync(query);
-    } catch (_) {}
-    return !this.hasKey();
-  }
-
-  private reply(callback: string, ok: boolean, status: number, body: string): void {
-    const script = 'window.' + callback + '(' + String(ok) + ',' + String(status) + ',' + JSON.stringify(body) + ')';
-    this.controller.runJavaScript(script).catch(() => {});
-  }
-
-  analyze(payload: string): boolean {
-    // Private material must pass the shared preview gateway. Legacy callers fail closed.
-    return false;
-  }
-
-  analyzeVision(payload: string): boolean {
-    return false;
-  }
-
-  testConnection(): boolean {
-    const key = this.readKey();
-    if (!key) { this.reply('XixuReceiveAITest', false, 401, '请先添加 DeepSeek API Key。'); return false; }
-    const payload: string = '{"model":"deepseek-flash","messages":[{"role":"user","content":"Reply with only: Connected."}],"thinking":{"type":"disabled"},"temperature":0,"max_tokens":8,"stream":false}';
-    this.request(payload, key, 'XixuReceiveAITest');
-    return true;
-  }
-
-  private async request(payload: string, key: string, callback: string): Promise<void> {
-    const request = http.createHttp();
-    try {
-      const response = await request.request('https://api.deepseek.com/chat/completions', {
-        method: http.RequestMethod.POST,
-        header: {
-          Authorization: 'Bearer ' + key,
-          'Content-Type': 'application/json'
-        },
-        extraData: payload,
-        expectDataType: http.HttpDataType.STRING,
-        connectTimeout: 20000,
-        readTimeout: 45000,
-        usingCache: false
-      });
-      const body = String(response.result);
-      const status = Number(response.responseCode);
-      this.reply(callback, status >= 200 && status < 300, status, body);
-    } catch (_) {
-      this.reply(callback, false, 0, '连接失败，请检查网络后重试。');
-    } finally { request.destroy(); }
   }
 }
 
@@ -575,7 +482,6 @@ struct Index {
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridgesRegistered: boolean = false;
   private storage: LocalStore = new LocalStore();
-  private ai: DeepSeekBridge = new DeepSeekBridge(this.controller);
   private models: ModelGateway = new ModelGateway(this.controller);
   private backups: BackupBridge = new BackupBridge(this.controller);
   private knowledge: KnowledgeBridge = new KnowledgeBridge(this.controller);
@@ -598,7 +504,6 @@ struct Index {
     if (this.bridgesRegistered) { return; }
     try {
       this.controller.registerJavaScriptProxy(this.storage, 'XixuStore', ['read', 'save', 'cloudStatus']);
-      this.controller.registerJavaScriptProxy(this.ai, 'XixuAI', ['hasKey', 'saveKey', 'deleteKey', 'analyze', 'analyzeVision', 'testConnection']);
       this.controller.registerJavaScriptProxy(this.models, 'XixuModels', ['publicConfig', 'save', 'start', 'cancel']);
       this.controller.registerJavaScriptProxy(this.knowledge, 'XixuKnowledge', ['status', 'call', 'disconnect', 'cancel']);
       this.controller.registerJavaScriptProxy(this.backups, 'XixuBackup', ['beginWrite', 'writeChunk', 'save', 'choose', 'readRange', 'close']);

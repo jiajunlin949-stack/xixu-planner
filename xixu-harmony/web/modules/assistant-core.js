@@ -37,11 +37,9 @@
   function assistantSheetHtml(){return assistantSheet?'<div class="xixu-assistant-overlay"><section class="xixu-assistant-sheet" role="dialog" aria-modal="true" aria-labelledby="xixu-assistant-sheet-title"><header><h2 id="xixu-assistant-sheet-title">'+esc(assistantSheet.title)+'</h2><button type="button" data-action="assistant-close" aria-label="关闭">'+icon('x')+'</button></header>'+assistantSheet.html+'</section></div>':''}
   function assistantRefreshSheet(){
     const existing=root.querySelector('.xixu-assistant-overlay');if(assistantSheet&&existing?.dataset.sheetToken===assistantSheet.token)return;
-    const fields=existing?[...existing.querySelectorAll('input,textarea,select')].map(field=>({value:field.value,checked:field.checked,selection:field.selectionStart})):[];
     existing?.remove();
     if(!assistantSheet)return;
     root.insertAdjacentHTML('beforeend',assistantSheetHtml());
-    if(existing?.dataset.sheetToken===assistantSheet.token)root.querySelectorAll('.xixu-assistant-sheet input,.xixu-assistant-sheet textarea,.xixu-assistant-sheet select').forEach((field,index)=>{if(fields[index]){field.value=fields[index].value;if(field.type==='checkbox')field.checked=fields[index].checked}});
     root.querySelector('.xixu-assistant-overlay').dataset.sheetToken=assistantSheet.token;
     if(globalThis.lucide)globalThis.lucide.createIcons({root:root.querySelector('.xixu-assistant-overlay')});
   }
@@ -51,7 +49,8 @@
   }
   function assistantCloseSheet(){
     const old=assistantSheet;assistantSheet=null;root.querySelector('.xixu-assistant-overlay')?.remove();
-    if(old?.kind==='privacy'&&typeof assistantCancelPrivacy==='function')assistantCancelPrivacy();
+    if(old?.kind==='privacy')assistantCancelPrivacy();
+    if(old?.kind==='vision')assistantCancelVision();
     if(typeof syncBackState==='function')syncBackState();
     if(assistantSheetFocus?.isConnected)assistantSheetFocus.focus({preventScroll:true});
   }
@@ -157,8 +156,7 @@
     const action=assistantTool(name,args);delete state.pendingSlots[conversation];
     return {answer:'已整理“'+next.title+'”。'+(!next.time&&next.type==='homework'?'截止时刻暂按 23:59 展示，请核对。':'请核对后确认加入。'),refs:[],action,tool:name,source:'local'};
   }
-  const localCommandBeforeAssistant=localAgentCommand;
-  localAgentCommand=function(query){return assistantRuleCommand(query)||assistantScheduleAnswer(query)||localCommandBeforeAssistant(query)};
+  function localAgentCommand(query){return assistantRuleCommand(query)||assistantScheduleAnswer(query)||localAgentNoteCommand(query)}
   function assistantScheduleAnswer(query){
     if(!/安排|日程|课|空闲|有空|冲突|足球|踢球/.test(query)||!(agentReadQuestion(query)||/能不能|可以|(?:我想|想去|能去).*(?:足球|踢球)/.test(query)))return null;
     const date=assistantDateSlots(query);if(date.ambiguous)return {answer:'你指本周还是下周？请把查询日期说完整，我再查课表和日程。',refs:[],action:{type:'none'},source:'local'};if(!date.date)return null;
@@ -245,8 +243,6 @@
   }
   const actionHtmlBeforeAssistant=agentActionHtml;
   agentActionHtml=function(action){if(action?.type==='tool_update_event'){const target=tasks.find(item=>item.id===action.taskId);return '<div class="xixu-agent-action"><strong>'+esc(target?.title||'事项已不存在')+'</strong><p>'+esc(Object.entries(action.patch).filter(([key])=>key!=='task_id').map(([key,value])=>key+'：'+value).join(' · '))+'</p><button data-action="agent-confirm" class="tide-primary">核对修改</button></div>'}return actionHtmlBeforeAssistant(action)};
-  const readFieldsBeforeAssistant=readAgentActionFields;
-  readAgentActionFields=function(action,container){return action?.type==='tool_update_event'?true:readFieldsBeforeAssistant(action,container)};
   const settingsBeforeAssistantCore=renderSettings;
   const navigateBeforeAssistant=canNavigateBack;
   canNavigateBack=function(){return Boolean(assistantSheet)||navigateBeforeAssistant()};
