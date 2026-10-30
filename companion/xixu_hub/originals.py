@@ -79,7 +79,7 @@ class Originals:
         fd, temporary = tempfile.mkstemp(prefix='.writing-', dir=self.directory)
         try:
             copied, second = 0, hashlib.sha256()
-            with source.open('rb') as incoming, os.fdopen(fd, 'wb') as outgoing:
+            with os.fdopen(fd, 'wb') as outgoing, source.open('rb') as incoming:
                 while part := incoming.read(256 * 1024):
                     outgoing.write(part)
                     copied += len(part)
