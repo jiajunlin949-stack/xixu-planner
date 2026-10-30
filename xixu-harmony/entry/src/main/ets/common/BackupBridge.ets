@@ -14,7 +14,7 @@ export class BackupBridge {
   private size: number = 0;
   private saving: boolean = false;
   private base64: util.Base64Helper = new util.Base64Helper();
-  private readonly maximum: number = 2 * 1024 * 1024 * 1024 - 1;
+  private readonly maximum: number = Number.MAX_SAFE_INTEGER;
   constructor(controller: webview.WebviewController) { this.controller = controller; }
   initialize(context: common.UIAbilityContext): void { this.context = context; this.directory = context.cacheDir; }
   private emit(id: string, ok: boolean, body: string): void {
@@ -79,7 +79,7 @@ export class BackupBridge {
     }).catch(() => { this.close(); this.emit(id, false, '已取消选择，本机资料未修改。'); }); return true;
   }
   readRange(offset: number, length: number): string {
-    if (!this.active || this.mode !== 'read' || !Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 1 || length > 256 * 1024 || offset + length > this.size) { throw new Error('读取范围无效'); }
+    if (!this.active || this.mode !== 'read' || !Number.isSafeInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 1 || length > 256 * 1024 || offset + length > this.size) { throw new Error('读取范围无效'); }
     fs.lseek(this.active.fd, offset, fs.WhenceType.SEEK_SET);
     const bytes: Uint8Array = new Uint8Array(length); let received: number = 0;
     while (received < length) { const part: ArrayBuffer = new ArrayBuffer(length - received); const count: number = fs.readSync(this.active.fd, part, { length: part.byteLength }); if (!count) { throw new Error('备份文件不完整'); } bytes.set(new Uint8Array(part, 0, count), received); received += count; }

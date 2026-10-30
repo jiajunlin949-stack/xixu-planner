@@ -1,0 +1,3 @@
+-r requirements.txt
+# Optional: install only when using an already downloaded local reranker.
+sentence-transformers==6.2.0

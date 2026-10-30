@@ -36,7 +36,7 @@ export class NoteArchive {
   beginWrite(key: string, size: number): boolean {
     this.close();
     const destination: string = this.path(key);
-    if (!Number.isInteger(size) || size < 1 || size > 20 * 1024 * 1024) { throw new Error('原件大小超出本次支持范围'); }
+    if (!Number.isSafeInteger(size) || size < 1) { throw new Error('原件大小超出本次支持范围'); }
     if (fs.accessSync(destination)) {
       if (fs.statSync(destination).size !== size) { throw new Error('已有原件校验失败，请保留资料并联系开发者'); }
       return false;
@@ -66,7 +66,7 @@ export class NoteArchive {
     this.close();
     this.active = fs.openSync(this.path(key), fs.OpenMode.READ_ONLY);
     this.expected = fs.statSync(this.active.fd).size;
-    if (this.expected < 1 || this.expected > 20 * 1024 * 1024) { this.close(); throw new Error('原件大小无效'); }
+    if (!Number.isSafeInteger(this.expected) || this.expected < 1) { this.close(); throw new Error('原件大小无效'); }
     this.mode = 'read'; this.key = key;
     return this.expected;
   }
@@ -75,11 +75,15 @@ export class NoteArchive {
     const remaining: number = this.expected - this.position;
     if (!remaining) { return ''; }
     const size: number = Math.min(256 * 1024, remaining, Math.max(1, Math.floor(length)));
-    const buffer: ArrayBuffer = new ArrayBuffer(size);
-    const count: number = fs.readSync(this.active.fd, buffer, { length: size });
-    if (count < 1) { throw new Error('原件读取不完整'); }
-    this.position += count;
-    return this.base64.encodeToStringSync(new Uint8Array(buffer).subarray(0, count));
+    const result: Uint8Array = new Uint8Array(size); let received: number = 0;
+    while (received < size) {
+      const buffer: ArrayBuffer = new ArrayBuffer(size - received);
+      const count: number = fs.readSync(this.active.fd, buffer, { length: buffer.byteLength });
+      if (count < 1) { throw new Error('原件读取不完整'); }
+      result.set(new Uint8Array(buffer, 0, count), received); received += count;
+    }
+    this.position += received;
+    return this.base64.encodeToStringSync(result);
   }
   exportFile(key: string, name: string): boolean {
     if (!this.context) { return false; }

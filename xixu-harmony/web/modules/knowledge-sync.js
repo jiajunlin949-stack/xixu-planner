@@ -34,11 +34,11 @@
       const sentAssets=new Set();
       for(let index=0;index<copy.length;index++){
         active();const note=copy[index],assets=new Map();
-        if(note.archive){assets.set(note.archive.originalHash,()=>archiveRead(note.archive.originalHash));for(const image of note.archive.images)assets.set(image.hash,()=>archiveRead(image.hash))}
-        for(const image of note.images||[]){const match=/^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(image.dataUrl||'');if(!match)throw Error('有图片编码无法核对，未提交快照');const bytes=archiveUnbase64(match[1]),hash=await archiveSha(bytes);assets.set(hash,async()=>bytes);image.hash=hash;image.bytes=bytes.length;delete image.dataUrl}
-        for(const [hash,read] of assets){
-          active();if(sentAssets.has(hash))continue;const bytes=await read();if(await archiveSha(bytes)!==hash)throw Error('原件哈希不一致，未提交快照');
-          for(let offset=0;offset<bytes.length;offset+=128*1024){active();knowledgeSyncProgress('同步第 '+(index+1)+' / '+copy.length+' 条笔记的原件…');await knowledgeCall('sync-asset',{session,hash,offset,total:bytes.length,data:archiveBase64(bytes.subarray(offset,offset+128*1024))});await archiveYield()}
+        if(note.archive){assets.set(note.archive.originalHash,{size:note.archive.fileBytes,walk:consume=>archiveWalk(note.archive.originalHash,consume)});for(const image of note.archive.images)assets.set(image.hash,{size:image.bytes,walk:consume=>archiveWalk(image.hash,consume)})}
+        for(const image of note.images||[]){const match=/^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(image.dataUrl||'');if(!match)throw Error('有图片编码无法核对，未提交快照');const bytes=archiveUnbase64(match[1]),hash=await archiveSha(bytes);assets.set(hash,{size:bytes.length,walk:consume=>archiveDigestSource(archiveBytesSource(bytes),consume)});image.hash=hash;image.bytes=bytes.length;delete image.dataUrl}
+        for(const [hash,asset] of assets){
+          active();if(sentAssets.has(hash))continue;const checked=await asset.walk();if(checked.hash!==hash||checked.bytes!==asset.size)throw Error('原件哈希或大小不一致，未提交快照');
+          await asset.walk(async(bytes,position)=>{for(let at=0;at<bytes.length;at+=128*1024){active();knowledgeSyncProgress('同步第 '+(index+1)+' / '+copy.length+' 条笔记的原件…');await knowledgeCall('sync-asset',{session,hash,offset:position+at,total:asset.size,data:archiveBase64(bytes.subarray(at,at+128*1024))});await archiveYield()}});
           sentAssets.add(hash);
         }
         const bytes=new TextEncoder().encode(JSON.stringify(note)),parts=Math.max(1,Math.ceil(bytes.length/(128*1024)));

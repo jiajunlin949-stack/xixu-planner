@@ -76,6 +76,31 @@
           "exclude_task_id": {"type": "string", "maxLength": 128}
         }
       }
+    },
+    {
+      "name": "search_web",
+      "description": "建议公开网页搜索；只读但需用户另行核对搜索词，不能自动发送私人资料",
+      "readOnly": true,
+      "requiresConfirmation": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          }
+        }
+      }
     }
   ]
 }

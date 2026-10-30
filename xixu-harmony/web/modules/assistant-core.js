@@ -16,6 +16,19 @@
     for(const [key,max] of [['journal',1000],['traces',300],['commitments',10000]])if(!Array.isArray(value[key])||value[key].length>max)throw Error('助手记录不完整或超出容量，请保留原备份。');
     if(!value.pendingSlots||typeof value.pendingSlots!=='object'||Array.isArray(value.pendingSlots)||!value.taskProgress||typeof value.taskProgress!=='object'||Array.isArray(value.taskProgress))throw Error('助手状态不完整。');
     for(const entry of value.journal)if(!entry||typeof entry.id!=='string'||!Array.isArray(entry.deltas)||entry.deltas.some(delta=>!delta||!['courses','lessons','tasks','notes'].includes(delta.collection)||typeof delta.id!=='string'||delta.before!==null&&typeof delta.before!=='object'||delta.after!==null&&typeof delta.after!=='object'))throw Error('变更档案无效，未覆盖数据。');
+    if(value.privateTerms!==undefined&&(!Array.isArray(value.privateTerms)||value.privateTerms.length>500||value.privateTerms.some(term=>typeof term!=='string'||!term||term.length>80)))throw Error('隐藏词表无效');
+    if(value.temporalResolutions!==undefined&&(!Array.isArray(value.temporalResolutions)||value.temporalResolutions.some(item=>!item||typeof item.subject!=='string'||typeof item.scope!=='string'||typeof item.value!=='string'||!Array.isArray(item.fingerprints)||item.fingerprints.some(value=>typeof value!=='string'))))throw Error('通知核对依据无效');
+    const history=value.checkpoints;
+    if(history!==undefined){
+      if(!history||history.version!==1||!Array.isArray(history.items))throw Error('历史快照索引无效');
+      const historyIds=new Set();
+      for(const item of history.items){
+        if(!item||typeof item.id!=='string'||!item.id||historyIds.has(item.id)||typeof item.label!=='string'||item.label.length>80||!/^\d{4}-\d{2}-\d{2}$/.test(item.day)||!Number.isFinite(Date.parse(item.at))||!/^[a-f0-9]{64}$/.test(item.hash)||!Number.isSafeInteger(item.bytes)||item.bytes<1||!Array.isArray(item.assets)||!Array.isArray(item.counts))throw Error('历史快照条目无效');
+        historyIds.add(item.id);
+        if(item.assets.some(asset=>!asset||!/^[a-f0-9]{64}$/.test(asset.hash)||!Number.isSafeInteger(asset.bytes)||asset.bytes<1))throw Error('历史原件清单无效');
+        if(item.counts.some(value=>!value||!['courses','lessons','tasks','notes','scratchEntries','agentHistory'].includes(value.key)||!Number.isInteger(value.count)||value.count<0))throw Error('历史快照条数无效');
+      }
+    }
     const box=value.mailbox;
     if(!box||typeof box.enabled!=='boolean'||!['gentle','plain','direct'].includes(box.tone)||!box.enrolled||!Array.isArray(box.letters)||box.letters.length>10000||!Array.isArray(box.truths)||box.truths.length>10000)throw Error('时间信箱记录无效。');
     for(const letter of box.letters)if(!letter||typeof letter.id!=='string'||typeof letter.taskId!=='string'||typeof letter.body!=='string'||letter.body.length>12000||!Array.isArray(letter.facts))throw Error('时间信件数据无效。');
@@ -78,6 +91,7 @@
   function assistantTool(name,args,context={}){
     const definition=assistantTools.get(name);if(!definition)throw Error('不支持的工具');
     assistantValidate(definition.inputSchema,args);
+    if(name==='search_web')return {readOnly:true,type:'search_web',query:args.query,limit:args.limit||5};
     if(name==='search_notes')return {readOnly:true,refs:semanticAgentSearch(args.query).filter(ref=>!args.date_from||String(ref.date||'')>=args.date_from).filter(ref=>!args.date_to||String(ref.date||'')<=args.date_to).slice(0,args.limit||5)};
     if(name==='get_schedule')return {readOnly:true,...assistantSchedule(args)};
     if(name==='update_event'){
@@ -248,7 +262,7 @@
   canNavigateBack=function(){return Boolean(assistantSheet)||navigateBeforeAssistant()};
   const backBeforeAssistant=window.XixuHandleSystemBack;
   window.XixuHandleSystemBack=()=>{if(assistantSheet){assistantCloseSheet();return true}return backBeforeAssistant?.()};
-  renderSettings=function(){return settingsBeforeAssistantCore()+'<div class="tide-section"><h2>助手记录</h2></div><div class="xixu-setting-actions"><button data-action="assistant-journal">'+icon('git-compare-arrows')+'<span>日程变更记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-traces">'+icon('activity')+'<span>处理记录</span>'+icon('chevron-right')+'</button></div>'};
+  renderSettings=function(){return settingsBeforeAssistantCore()+'<div class="tide-section"><h2>助手记录</h2></div><div class="xixu-setting-actions"><button data-action="assistant-journal">'+icon('git-compare-arrows')+'<span>日程变更记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-traces">'+icon('activity')+'<span>处理记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-private-terms">'+icon('shield-check')+'<span>发送前隐藏词表</span>'+icon('chevron-right')+'</button></div>'};
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-action]');if(!button)return;const action=button.dataset.action;
     try{

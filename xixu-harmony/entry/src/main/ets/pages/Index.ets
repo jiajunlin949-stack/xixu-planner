@@ -140,6 +140,7 @@ class SelectedFileBridge {
   private activeFile: fs.File | undefined = undefined;
   private activeSize: number = 0;
   private activePosition: number = 0;
+  private activeIndex: number = -1;
   private selectionId: number = 0;
 
   private closeActive(): void {
@@ -149,6 +150,7 @@ class SelectedFileBridge {
     this.activeFile = undefined;
     this.activeSize = 0;
     this.activePosition = 0;
+    this.activeIndex = -1;
   }
 
   setSelection(uris: string[]): boolean {
@@ -167,12 +169,13 @@ class SelectedFileBridge {
     try {
       opened = fs.openSync(this.selectedUris[index], fs.OpenMode.READ_ONLY);
       const size: number = fs.statSync(opened.fd).size;
-      if (!Number.isInteger(size) || size < 1 || size > 20 * 1024 * 1024) {
+      if (!Number.isSafeInteger(size) || size < 1) {
         throw new Error('所选文件大小无效');
       }
       this.activeFile = opened;
       this.activeSize = size;
       this.activePosition = 0;
+      this.activeIndex = index;
       return JSON.stringify({ size: size, name: opened.name, selectionId: this.selectionId });
     } catch (_) {
       if (opened) { try { fs.closeSync(opened.fd); } catch (_) {} }
@@ -193,6 +196,17 @@ class SelectedFileBridge {
     if (count <= 0) { return ''; }
     this.activePosition += count;
     return this.base64.encodeToStringSync(new Uint8Array(buffer).subarray(0, count));
+  }
+
+  readRange(offset: number, length: number, expectedSelection: number, expectedIndex: number): string {
+    if (expectedSelection !== this.selectionId || expectedIndex !== this.activeIndex) { throw new Error('文件选择或所读文件已变化'); }
+    if (!this.activeFile || !Number.isSafeInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 1 || length > 256 * 1024 || offset + length > this.activeSize) { throw new Error('所选文件读取范围无效'); }
+    fs.lseek(this.activeFile.fd, offset, fs.WhenceType.SEEK_SET);
+    this.activePosition = offset;
+    const result: Uint8Array = new Uint8Array(length);
+    let received: number = 0;
+    while (received < length) { const bytes: Uint8Array = this.base64.decodeSync(this.readChunk(length - received)); if (!bytes.length) { throw new Error('所选文件读取不完整'); } result.set(bytes, received); received += bytes.length; }
+    return this.base64.encodeToStringSync(result);
   }
 
   finish(expectedId?: number): boolean {
@@ -259,7 +273,7 @@ class OcrBridge {
   }
 
   recognizeDocumentPage(dataUrl: string, pageNumber: string): boolean {
-    if (!/^\d{1,2}$/.test(pageNumber) || !dataUrl || dataUrl.length > 26 * 1024 * 1024 || !dataUrl.startsWith('data:image/')) { return false; }
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(pageNumber) || !dataUrl || dataUrl.length > 26 * 1024 * 1024 || !dataUrl.startsWith('data:image/')) { return false; }
     const comma: number = dataUrl.indexOf(',');
     if (comma < 0 || dataUrl.slice(0, comma).indexOf(';base64') < 0) { return false; }
     this.run(dataUrl.slice(comma + 1), 'document', pageNumber);
@@ -509,7 +523,7 @@ struct Index {
       this.controller.registerJavaScriptProxy(this.backups, 'XixuBackup', ['beginWrite', 'writeChunk', 'save', 'choose', 'readRange', 'close']);
       this.controller.registerJavaScriptProxy(this.ocr, 'XixuOCR', ['status', 'recognize', 'recognizeAssessment', 'recognizeAssistant', 'recognizeDocumentPage']);
       this.controller.registerJavaScriptProxy(this.reminders, 'XixuReminder', ['status', 'enable', 'sync']);
-      this.controller.registerJavaScriptProxy(this.files, 'XixuFile', ['begin', 'readChunk', 'finish']);
+      this.controller.registerJavaScriptProxy(this.files, 'XixuFile', ['begin', 'readChunk', 'readRange', 'finish']);
       this.controller.registerJavaScriptProxy(this.archive, 'XixuArchive', ['status', 'beginWrite', 'writeChunk', 'finishWrite', 'beginRead', 'readChunk', 'close', 'exportFile']);
       this.controller.registerJavaScriptProxy(this.clipboard, 'XixuClipboard', ['copy']);
       this.controller.registerJavaScriptProxy(this.back, 'XixuBack', ['setCanGoBack']);

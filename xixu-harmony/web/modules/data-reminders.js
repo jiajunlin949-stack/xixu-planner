@@ -192,11 +192,12 @@
   }
   function validNoteArchive(value){
     if(value===undefined)return true;
-    if(!value||![1,2].includes(value.version)||!/^[a-f0-9]{64}$/.test(value.originalHash)||!/^[a-f0-9]{64}$/.test(value.textHash)||typeof value.fileName!=='string'||!value.fileName||value.fileName.length>1000||!Number.isInteger(value.fileBytes)||value.fileBytes<1||value.fileBytes>20*1024*1024||!Array.isArray(value.images)||value.images.length>500||!Array.isArray(value.layout)||value.layout.length>10000)return false;
-    if(value.version===2&&(!['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp'].includes(value.format)||!Array.isArray(value.warnings)||value.warnings.length>40||value.warnings.some(text=>typeof text!=='string'||text.length>500)))return false;
-    if(value.images.some(image=>!image||!/^[a-f0-9]{64}$/.test(image.hash)||!['image/jpeg','image/png','image/webp'].includes(image.mime)||!Number.isInteger(image.bytes)||image.bytes<1||image.bytes>20*1024*1024))return false;
+    if(!value||![1,2].includes(value.version)||!/^[a-f0-9]{64}$/.test(value.originalHash)||!/^[a-f0-9]{64}$/.test(value.textHash)||typeof value.fileName!=='string'||!value.fileName||value.fileName.length>1000||!Number.isInteger(value.fileBytes)||value.fileBytes<1||!Number.isSafeInteger(value.fileBytes)||!Array.isArray(value.images)||value.images.length>500||!Array.isArray(value.layout)||value.layout.length>10000)return false;
+    if(value.projectionStatus!==undefined&&!['original-only','partial','text'].includes(value.projectionStatus))return false;
+    if(value.version===2&&(!['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp','hdoc','doc','bin'].includes(value.format)||!Array.isArray(value.warnings)||value.warnings.length>40||value.warnings.some(text=>typeof text!=='string'||text.length>500)))return false;
+    if(value.images.some(image=>!image||!/^[a-f0-9]{64}$/.test(image.hash)||!['image/jpeg','image/png','image/webp'].includes(image.mime)||!Number.isInteger(image.bytes)||image.bytes<1||!Number.isSafeInteger(image.bytes)))return false;
     if(value.images.some(image=>image.width!==undefined&&(!Number.isFinite(image.width)||!Number.isFinite(image.height)||image.width<=0||image.height<=0||image.width>100000||image.height>100000)))return false;
-    if(value.images.reduce((sum,image)=>sum+image.bytes,0)>(value.version===1?value.fileBytes:64*1024*1024))return false;
+    if(value.images.reduce((sum,image)=>sum+image.bytes,0)>(value.version===1?value.fileBytes:value.format==='pdf'?Number.MAX_SAFE_INTEGER:64*1024*1024))return false;
     let depth=0,characters=0,imageIndex=0;
     for(const item of value.layout){
       if(!item||!['text','break','open','close','image','checkbox'].includes(item.kind))return false;

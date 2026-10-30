@@ -4,6 +4,7 @@
   "ai-assistant.js",
   "home.js",
   "productivity.js",
+  "archive-io.js",
   "note-archive.js",
   "document-import.js",
   "rag.js",
@@ -15,5 +16,7 @@
   "assistant-core.js",
   "assistant-intelligence.js",
   "assistant-network.js",
-  "full-backup.js"
+  "backup-zip.js",
+  "full-backup.js",
+  "history-checkpoints.js"
 ]

@@ -690,11 +690,12 @@
   }
   function validNoteArchive(value){
     if(value===undefined)return true;
-    if(!value||![1,2].includes(value.version)||!/^[a-f0-9]{64}$/.test(value.originalHash)||!/^[a-f0-9]{64}$/.test(value.textHash)||typeof value.fileName!=='string'||!value.fileName||value.fileName.length>1000||!Number.isInteger(value.fileBytes)||value.fileBytes<1||value.fileBytes>20*1024*1024||!Array.isArray(value.images)||value.images.length>500||!Array.isArray(value.layout)||value.layout.length>10000)return false;
-    if(value.version===2&&(!['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp'].includes(value.format)||!Array.isArray(value.warnings)||value.warnings.length>40||value.warnings.some(text=>typeof text!=='string'||text.length>500)))return false;
-    if(value.images.some(image=>!image||!/^[a-f0-9]{64}$/.test(image.hash)||!['image/jpeg','image/png','image/webp'].includes(image.mime)||!Number.isInteger(image.bytes)||image.bytes<1||image.bytes>20*1024*1024))return false;
+    if(!value||![1,2].includes(value.version)||!/^[a-f0-9]{64}$/.test(value.originalHash)||!/^[a-f0-9]{64}$/.test(value.textHash)||typeof value.fileName!=='string'||!value.fileName||value.fileName.length>1000||!Number.isInteger(value.fileBytes)||value.fileBytes<1||!Number.isSafeInteger(value.fileBytes)||!Array.isArray(value.images)||value.images.length>500||!Array.isArray(value.layout)||value.layout.length>10000)return false;
+    if(value.projectionStatus!==undefined&&!['original-only','partial','text'].includes(value.projectionStatus))return false;
+    if(value.version===2&&(!['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp','hdoc','doc','bin'].includes(value.format)||!Array.isArray(value.warnings)||value.warnings.length>40||value.warnings.some(text=>typeof text!=='string'||text.length>500)))return false;
+    if(value.images.some(image=>!image||!/^[a-f0-9]{64}$/.test(image.hash)||!['image/jpeg','image/png','image/webp'].includes(image.mime)||!Number.isInteger(image.bytes)||image.bytes<1||!Number.isSafeInteger(image.bytes)))return false;
     if(value.images.some(image=>image.width!==undefined&&(!Number.isFinite(image.width)||!Number.isFinite(image.height)||image.width<=0||image.height<=0||image.width>100000||image.height>100000)))return false;
-    if(value.images.reduce((sum,image)=>sum+image.bytes,0)>(value.version===1?value.fileBytes:64*1024*1024))return false;
+    if(value.images.reduce((sum,image)=>sum+image.bytes,0)>(value.version===1?value.fileBytes:value.format==='pdf'?Number.MAX_SAFE_INTEGER:64*1024*1024))return false;
     let depth=0,characters=0,imageIndex=0;
     for(const item of value.layout){
       if(!item||!['text','break','open','close','image','checkbox'].includes(item.kind))return false;
@@ -1053,18 +1054,19 @@
   }
   const pdfOcrWaiters=new Map();
   window.XixuReceivePdfOCR=(ok,body,pageNumber)=>{
-    const key=Number(pageNumber),waiter=pdfOcrWaiters.get(key);if(!waiter)return;
+    const key=String(pageNumber),waiter=pdfOcrWaiters.get(key);if(!waiter)return;
     pdfOcrWaiters.delete(key);clearTimeout(waiter.timer);
-    if(!ok){waiter.reject(Error(body||('第 '+key+' 页无法识别。')));return}
-    try{waiter.resolve(JSON.parse(body))}catch(_){waiter.reject(Error('第 '+key+' 页的识别结果无法读取。'))}
+    if(!ok){waiter.reject(Error(body||('第 '+waiter.pageNumber+' 页无法识别。')));return}
+    try{waiter.resolve(JSON.parse(body))}catch(_){waiter.reject(Error('第 '+waiter.pageNumber+' 页的识别结果无法读取。'))}
   };
   function recognizePdfPage(bridge,dataUrl,pageNumber){
+    const requestId='doc_'+uid().replace(/[^A-Za-z0-9_-]/g,'');
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{pdfOcrWaiters.delete(pageNumber);reject(Error('第 '+pageNumber+' 页识别超时，请重试。'))},65000);
-      pdfOcrWaiters.set(pageNumber,{resolve,reject,timer});
-      try{Promise.resolve(bridge.recognizeDocumentPage(dataUrl,String(pageNumber))).then(started=>{if(started)return;clearTimeout(timer);pdfOcrWaiters.delete(pageNumber);reject(Error('第 '+pageNumber+' 页未送入识别服务。'))}).catch(error=>{clearTimeout(timer);pdfOcrWaiters.delete(pageNumber);reject(error)})}
-      catch(error){clearTimeout(timer);pdfOcrWaiters.delete(pageNumber);reject(error)}
-    })
+      const fail=error=>{const waiter=pdfOcrWaiters.get(requestId);if(!waiter)return;clearTimeout(waiter.timer);pdfOcrWaiters.delete(requestId);reject(error)};
+      const timer=setTimeout(()=>fail(Error('第 '+pageNumber+' 页识别超时，请重试。')),65000);
+      pdfOcrWaiters.set(requestId,{resolve,reject,timer,pageNumber});
+      try{Promise.resolve(bridge.recognizeDocumentPage(dataUrl,requestId)).then(started=>{if(!started)fail(Error('第 '+pageNumber+' 页未送入识别服务。'))},fail)}catch(error){fail(error)}
+    });
   }
   function pdfWeeks(value){
     const result=new Set(),source=String(value||'').replace(/[，、]/g,',').replace(/[–—至]/g,'-');
@@ -1812,31 +1814,40 @@
     return result;
   }
   async function notesFromFile(file,index,selection){
-    const extension=(file.name.split('.').pop()||'').toLowerCase(),sourceFileModifiedAt=file.lastModified?new Date(file.lastModified).toISOString():'',bytes=await archiveSelectedBytes(file,index,selection);
-    selection.totalBytes=(selection.totalBytes||0)+bytes.length;if(selection.totalBytes>25*1024*1024)throw Error('所选文件实际总大小超过 25 MiB，未截断或新增笔记');
-    if(extension==='json'){
-      let value;try{value=JSON.parse(documentText(bytes))}catch(_){throw Error('“'+file.name+'” 不是有效的 JSON 文件')}
-      const items=jsonNotes(value,file.name,sourceFileModifiedAt),originalHash=await archiveSha(bytes);await archiveStore(bytes,originalHash);
-      for(const item of items){if(item.text.length>50000)throw Error('JSON 中有笔记超过 50000 字符，未截断导入');item.archive={version:2,format:'json',fileName:file.name,fileBytes:bytes.length,originalHash,textHash:await archiveSha(new TextEncoder().encode(item.text)),images:[],layout:[{kind:'text',text:item.text}],warnings:['此条是 JSON 的文字投影；完整 JSON 原文件可从本条导出。']}}
+    const extension=(file.name.split('.').pop()||'').toLowerCase(),sourceFileModifiedAt=file.lastModified?new Date(file.lastModified).toISOString():'',generation=noteImportGeneration,source=await archiveSelectedSource(file,index,selection);
+    if(extension==='hdoc'||extension==='doc'||source.size>DOCUMENT_WORKING_BYTES)return [{...await documentOriginalOnly(source,file.name,extension==='hdoc'?'华为原生 hdoc 正文尚待可靠解码':extension==='doc'?'旧版 DOC 保留原件，建议另存 DOCX 以展开正文':'此文件采用分块原件归档，避免一次把整个文件加载到内存'),sourceFileModifiedAt}];
+    const bytes=new Uint8Array(source.size);for(let offset=0;offset<source.size;offset+=ARCHIVE_CHUNK_SIZE){if(generation!==noteImportGeneration)throw Error('已取消导入');const length=Math.min(ARCHIVE_CHUNK_SIZE,source.size-offset),part=await source.read(offset,length);if(part.length!==length)throw Error('文件读取不完整');bytes.set(part,offset);await archiveYield()}
+    try{
+      if(extension==='json'){
+        const items=jsonNotes(JSON.parse(documentText(bytes)),file.name,sourceFileModifiedAt),originalHash=await archiveSha(bytes);await archiveStore(bytes,originalHash);
+        for(const item of items){if(item.text.length>50000)throw Error('JSON 中单条正文超过当前编辑范围');item.archive={version:2,format:'json',fileName:file.name,fileBytes:bytes.length,originalHash,textHash:await archiveSha(new TextEncoder().encode(item.text)),images:[],layout:[{kind:'text',text:item.text}],warnings:['此条是 JSON 的文字投影；完整 JSON 原文件可从本条导出。']}}
+        return items;
+      }
+      const parsed=await parseArchiveDocument(bytes,file.name);
+      if(generation!==noteImportGeneration)throw Error('已取消导入');
+      const archive=await archiveDocumentProjection(parsed,bytes),parts=documentTextParts(parsed.text),items=[];
+      for(let part=0;part<parts.length;part++){
+        const projection={...archive,textHash:await archiveSha(new TextEncoder().encode(parts[part]))};
+        if(part||parts.length>1&&!['pdf'].includes(parsed.format)){projection.images=[];projection.layout=[{kind:'text',text:parts[part]}]}
+        if(parts.length>1)projection.warnings=[...projection.warnings,'长正文分为 '+parts.length+' 段；按段号顺序拼接可还原提取文字，完整排版与图文以原文件为准。'];
+        items.push({title:parsed.title+(parts.length>1?' · 第 '+(part+1)+' / '+parts.length+' 段':''),text:parts[part],images:[],createdAt:parsed.createdAt||'',updatedAt:parsed.updatedAt||'',sourceFileModifiedAt,archive:projection});
+      }
       return items;
-    }
-    const parsed=await parseArchiveDocument(bytes,file.name),archive=await archiveDocumentProjection(parsed,bytes);
-    return [{title:parsed.title,text:parsed.text,images:[],createdAt:parsed.createdAt||'',updatedAt:parsed.updatedAt||'',sourceFileModifiedAt,archive}];
+    }catch(error){if(generation!==noteImportGeneration)throw error;return [{...await documentOriginalOnly(archiveBytesSource(bytes),file.name,error.message||'正文暂未展开'),sourceFileModifiedAt}]}
   }
   async function prepareNoteImport(fileList){
     if(noteImportBusy)return;
     const files=Array.from(fileList||[]);noteImportError='';noteImportDraft=[];
     if(!files.length)return;if(files.length>500){notify('一次最多选择 500 个文件。');return}
-    if(files.reduce((sum,file)=>sum+file.size,0)>25*1024*1024){notify('所选文件总大小不能超过 25 MB。');return}
-    const allowed=/\.(txt|md|markdown|csv|html?|json|docx|pdf|png|jpe?g|webp)$/i,unsupported=files.filter(file=>!allowed.test(file.name));
-    if(unsupported.length){notify('支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和图片；hdoc、旧版 DOC 暂未支持。');return}
-    const selection={},generation=++noteImportGeneration;noteImportBusy=true;openPanel({kind:'note-import'});
+    const allowed=/\.(txt|md|markdown|csv|html?|json|docx|doc|hdoc|pdf|png|jpe?g|webp)$/i,unsupported=files.filter(file=>!allowed.test(file.name));
+    if(unsupported.length){notify('支持文字、HTML、JSON、DOCX、PDF 和图片；hdoc、旧版 DOC 可完整归档原件。');return}
+    const selection={},generation=++noteImportGeneration;selection.active=()=>generation===noteImportGeneration;noteImportBusy=true;openPanel({kind:'note-import'});
     try{
       if(storageBlocked)throw Error('本机资料读取异常，未导入');
       const signature=item=>item.archive?item.archive.originalHash+'\n'+item.archive.fileName+'\n'+item.title+'\n'+item.text:item.title+'\n'+item.text;
       const groups=[];for(let index=0;index<files.length;index++){if(generation!==noteImportGeneration)return;groups.push(await notesFromFile(files[index],index,selection));await archiveYield()}
       if(generation!==noteImportGeneration)return;
-      const items=groups.flat().filter(item=>item.text||noteImageCount(item));if(items.length+notes.length>5000)throw Error('导入后会超过 5000 条笔记，未截断或新增');
+      const items=groups.flat().filter(item=>item.text||noteImageCount(item)||item.archive?.projectionStatus==='original-only');if(items.length+notes.length>5000)throw Error('导入后会超过 5000 条笔记，未截断或新增');
       const existing=new Set(notes.map(signature)),within=new Set();
       noteImportDraft=items.map((item,index)=>{const key=signature(item),duplicate=existing.has(key)||within.has(key);within.add(key);return {...item,index,duplicate}});
       if(!noteImportDraft.length){notify('这些文件中没有找到可导入的笔记或图片。');return}
@@ -1845,16 +1856,12 @@
     finally{if(window.XixuFile&&selection.id!==undefined)window.XixuFile.finish(selection.id);if(generation===noteImportGeneration){noteImportBusy=false;if(panel?.kind==='note-import')render(false)}}
   }
   function renderNoteImport(){
-    if(noteImportBusy)return top('读取文档')+'<p class="tide-note" role="status">正在核对文字、图片和原文件…确认前不会加入备忘录。可以返回取消。</p>';
+    if(noteImportBusy)return top('读取文档')+'<p class="tide-note" role="status">'+esc(documentImportProgress||'正在核对文字、图片和原文件…')+'确认前不会加入备忘录。可以返回取消。</p>';
     if(noteImportError)return top('导入笔记')+'<div class="tide-note warm" role="alert">'+esc(noteImportError)+'</div><button class="tide-primary tide-full" data-action="pick-note-import">重新选择文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>';
     const available=noteImportDraft.filter(item=>!item.duplicate).length,duplicates=noteImportDraft.length-available;
-    return top('核对笔记导入')+'<div class="xixu-import-summary"><strong>'+available+' 条待导入</strong><span>'+(duplicates?duplicates+' 条重复，已自动跳过':'没有发现重复')+'</span></div><div class="tide-note">原文件已在本机暂存并核对哈希，确认后才加入笔记。文字与图文视图用于阅读和检索，不代表完全重建原文档的排版。</div><form id="xixu-note-import-review" class="xixu-note-import-list">'+noteImportDraft.map((item,index)=>'<label class="'+(item.duplicate?'is-duplicate':'')+'"><input type="checkbox" name="noteImport" value="'+index+'" '+(item.duplicate?'disabled':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+(item.duplicate?'已有相同原件':noteImageCount(item)+' 张图片 · 保留原件')+'</small><em>'+esc(item.text?item.text.replace(/\s+/g,' ').slice(0,100):noteImageCount(item)+' 张图片')+'</em>'+(item.archive?.warnings||[]).map(text=>'<small>'+esc(text)+'</small>').join('')+'</span></label>').join('')+'<div class="tide-detail-actions"><button class="tide-secondary" type="button" data-action="pick-note-import">重新选择</button><button class="tide-primary" type="submit" '+(!available?'disabled':'')+'>导入选中内容</button></div></form><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden><div class="tide-note">不会修改或删除原文件。请同时备份原件；JSON 索引备份不包含独立原件。</div>';
+    return top('核对笔记导入')+'<div class="xixu-import-summary"><strong>'+available+' 条待导入</strong><span>'+(duplicates?duplicates+' 条重复，已自动跳过':'没有发现重复')+'</span></div><div class="tide-note">原文件已在本机暂存并核对哈希，确认后才加入笔记。文字与图文视图用于阅读和检索，不代表完全重建原文档的排版。</div><form id="xixu-note-import-review" class="xixu-note-import-list">'+noteImportDraft.map((item,index)=>'<label class="'+(item.duplicate?'is-duplicate':'')+'"><input type="checkbox" name="noteImport" value="'+index+'" '+(item.duplicate?'disabled':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+(item.duplicate?'已有相同原件':item.archive?.projectionStatus==='original-only'?'原件已归档 · 正文待解析':noteImageCount(item)+' 张图片 · 保留原件')+'</small><em>'+esc(item.text?item.text.replace(/\s+/g,' ').slice(0,100):noteImageCount(item)+' 张图片')+'</em>'+(item.archive?.warnings||[]).map(text=>'<small>'+esc(text)+'</small>').join('')+'</span></label>').join('')+'<div class="tide-detail-actions"><button class="tide-secondary" type="button" data-action="pick-note-import">重新选择</button><button class="tide-primary" type="submit" '+(!available?'disabled':'')+'>导入选中内容</button></div></form><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden><div class="tide-note">不会修改或删除原文件。请同时备份原件；JSON 索引备份不包含独立原件。</div>';
   }
-  function renderNoteImportHelp(){return top('导入笔记文件')+'<div class="tide-note">支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和 PNG/JPEG/WebP。单个原件最多 20 MiB、每批最多 25 MiB；PDF 最多 50 页。保存前核对提取结果，原文件完整保留。hdoc 和旧版 DOC 尚未解码。</div><button class="tide-primary tide-full" data-action="pick-note-import">选择笔记文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>'}
-
-  const baseImportReview=importReviewHtml;importReviewHtml=function(label){
-    return baseImportReview(label);
-  };
+  function renderNoteImportHelp(){return top('导入笔记文件')+'<div class="tide-note">支持 TXT、Markdown、CSV、HTML、JSON、DOCX、PDF 和 PNG/JPEG/WebP。原件按块保存；超出文字展开预算的文件仍可完整归档。PDF 逐页提取文字，扫描页在安装版尝试本机 OCR；hdoc、旧版 DOC 先保存原件并标明正文待解析。保存前可以逐项核对。</div><button class="tide-primary tide-full" data-action="pick-note-import">选择笔记文件</button><input id="xixu-note-import-files" type="file" multiple accept="'+NOTE_IMPORT_ACCEPT+'" hidden>'}
 
   function fitComposer(textarea){
     textarea.style.height='auto';textarea.style.height=Math.min(160,textarea.scrollHeight)+'px';
@@ -1943,10 +1950,95 @@
     }
   });
 
+  // Immutable originals use bounded chunks. Capacity follows the selected file
+  // and available storage; extraction has a separate working-memory budget.
+  const ARCHIVE_FILE_LIMIT=Number.MAX_SAFE_INTEGER,ARCHIVE_CHUNK_SIZE=256*1024;
+  const ARCHIVE_SHA_CONSTANTS=new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  const ARCHIVE_CRC_TABLE=Uint32Array.from({length:256},(_,value)=>{for(let bit=0;bit<8;bit++)value=(value>>>1)^((value&1)?0xedb88320:0);return value});
+  class ArchiveDigest {
+    constructor(){this.state=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);this.words=new Uint32Array(64);this.tail=new Uint8Array(64);this.used=0;this.size=0;this.crc=0xffffffff;this.finished=false}
+    block(bytes,offset=0){
+      const words=this.words,view=new DataView(bytes.buffer,bytes.byteOffset+offset,64),rotate=(v,n)=>(v>>>n)|(v<<(32-n));
+      for(let i=0;i<16;i++)words[i]=view.getUint32(i*4);
+      for(let i=16;i<64;i++){const x=words[i-15],y=words[i-2];words[i]=(words[i-16]+(rotate(x,7)^rotate(x,18)^(x>>>3))+words[i-7]+(rotate(y,17)^rotate(y,19)^(y>>>10)))>>>0}
+      let [a,b,c,d,e,f,g,h]=this.state;
+      for(let i=0;i<64;i++){const t1=(h+(rotate(e,6)^rotate(e,11)^rotate(e,25))+((e&f)^(~e&g))+ARCHIVE_SHA_CONSTANTS[i]+words[i])>>>0,t2=((rotate(a,2)^rotate(a,13)^rotate(a,22))+((a&b)^(a&c)^(b&c)))>>>0;h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0}
+      [a,b,c,d,e,f,g,h].forEach((value,i)=>{this.state[i]=(this.state[i]+value)>>>0});
+    }
+    update(bytes){
+      if(this.finished||!(bytes instanceof Uint8Array)||!Number.isSafeInteger(this.size+bytes.length))throw Error('原件校验状态无效');
+      this.size+=bytes.length;for(const byte of bytes)this.crc=(this.crc>>>8)^ARCHIVE_CRC_TABLE[(this.crc^byte)&255];
+      let offset=0;
+      if(this.used){const count=Math.min(64-this.used,bytes.length);this.tail.set(bytes.subarray(0,count),this.used);this.used+=count;offset=count;if(this.used===64){this.block(this.tail);this.used=0}}
+      while(offset+64<=bytes.length){this.block(bytes,offset);offset+=64}
+      if(offset<bytes.length){this.tail.set(bytes.subarray(offset),0);this.used=bytes.length-offset}
+    }
+    finish(){
+      if(this.finished)throw Error('原件校验已结束');this.finished=true;
+      const tail=new Uint8Array(this.used<56?64:128);tail.set(this.tail.subarray(0,this.used));tail[this.used]=128;
+      const view=new DataView(tail.buffer);view.setUint32(tail.length-8,Math.floor(this.size/0x20000000));view.setUint32(tail.length-4,(this.size*8)>>>0);
+      this.block(tail);if(tail.length===128)this.block(tail,64);
+      return {hash:[...this.state].map(value=>value.toString(16).padStart(8,'0')).join(''),crc:(this.crc^0xffffffff)>>>0,bytes:this.size};
+    }
+  }
+  function archiveValidSize(size){return Number.isSafeInteger(size)&&size>0}
+  async function archiveDigestSource(source,consume=null){
+    if(!archiveValidSize(source.size))throw Error('原件大小无效');const digest=new ArchiveDigest();
+    for(let offset=0;offset<source.size;offset+=ARCHIVE_CHUNK_SIZE){const length=Math.min(ARCHIVE_CHUNK_SIZE,source.size-offset),bytes=await source.read(offset,length);if(!(bytes instanceof Uint8Array)||bytes.length!==length)throw Error('文件读取不完整');digest.update(bytes);if(consume)await consume(bytes,offset);await archiveYield()}
+    return digest.finish();
+  }
+  async function archiveBlob(key){
+    const db=await archiveDb();return new Promise((resolve,reject)=>{const tx=db.transaction('assets','readonly'),request=tx.objectStore('assets').get(key);request.onsuccess=()=>request.result instanceof Blob?resolve(request.result):reject(Error('本机缺少原始文件'));request.onerror=()=>reject(Error('原件读取失败'))});
+  }
+  async function archiveWalk(key,consume=null){
+    if(!archiveHashPattern.test(key))throw Error('原件编号无效');
+    return archiveSerial(async()=>{
+      let result;
+      if(window.XixuArchive){
+        try{const size=Number(window.XixuArchive.beginRead(key));result=await archiveDigestSource({size,read:async(offset,length)=>archiveUnbase64(window.XixuArchive.readChunk(length))},consume)}finally{window.XixuArchive.close()}
+      }else{
+        if(window.XixuStore)throw Error('此安装包尚未接入图文原件存储');const blob=await archiveBlob(key);
+        result=await archiveDigestSource({size:blob.size,read:async(offset,length)=>new Uint8Array(await blob.slice(offset,offset+length).arrayBuffer())},consume);
+      }
+      if(result.hash!==key)throw Error('原件校验不一致，请保留原文件并重新导入');return result;
+    });
+  }
+  async function archiveStoreSource(source,expectedHash=''){
+    const original=await archiveDigestSource(source),key=original.hash;
+    if(expectedHash&&expectedHash!==key)throw Error('原文件校验不一致，未保存');
+    await archiveSerial(async()=>{
+      if(window.XixuArchive){
+        try{if(window.XixuArchive.beginWrite(key,source.size)){const copied=await archiveDigestSource(source,async bytes=>{if(!window.XixuArchive.writeChunk(archiveBase64(bytes)))throw Error('原件写入不完整')});if(copied.hash!==key)throw Error('读取期间原文件已改变，未发布原件');if(!window.XixuArchive.finishWrite())throw Error('原件未完整保存')}}finally{window.XixuArchive.close()}
+        return;
+      }
+      if(window.XixuStore)throw Error('此安装包尚未接入图文原件存储');
+      if(navigator.storage?.estimate){const space=await navigator.storage.estimate();if(space.quota&&space.quota-(space.usage||0)<source.size)throw Error('本机可用存储不足，未裁剪原文件')}
+      let blob=source.blob,tempDirectory=null,tempName='';
+      try{
+        if(!blob&&navigator.storage?.getDirectory){tempDirectory=await navigator.storage.getDirectory();tempName='xixu-archive-'+key+'-'+uid()+'.pending';const handle=await tempDirectory.getFileHandle(tempName,{create:true}),writer=await handle.createWritable();try{const copied=await archiveDigestSource(source,bytes=>writer.write(bytes));if(copied.hash!==key)throw Error('原件在读取期间改变');await writer.close();blob=await handle.getFile()}catch(error){await writer.abort().catch(()=>{});throw error}}
+        if(!blob){const parts=[],copied=await archiveDigestSource(source,async bytes=>parts.push(bytes.slice()));if(copied.hash!==key)throw Error('原件在读取期间改变');blob=new Blob(parts)}
+        const db=await archiveDb();await new Promise((resolve,reject)=>{const tx=db.transaction('assets','readwrite'),store=tx.objectStore('assets'),existing=store.get(key);existing.onsuccess=()=>{if(existing.result===undefined)store.add(blob,key)};tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(Error('原件未保存，请检查可用空间'))});
+      }finally{if(tempDirectory&&tempName)await tempDirectory.removeEntry(tempName).catch(()=>{})}
+    });
+    const saved=await archiveWalk(key);if(saved.bytes!==source.size)throw Error('原件保存后大小不一致');return original;
+  }
+  function archiveBytesSource(bytes){return {size:bytes.length,blob:new Blob([bytes]),read:async(offset,length)=>bytes.subarray(offset,offset+length)}}
+  async function archiveSelectedSource(file,index,selection){
+    const active=()=>{if(selection.active&&!selection.active())throw Error('已取消文档导入')};
+    if(!window.XixuFile)return {size:file.size,blob:file,read:async(offset,length)=>{active();return new Uint8Array(await file.slice(offset,offset+length).arrayBuffer())}};
+    const open=()=>{const info=JSON.parse(window.XixuFile.begin(index));if(selection.id!==undefined&&selection.id!==info.selectionId)throw Error('文件选择已变化');selection.id=info.selectionId;return info};
+    const info=open();if(!archiveValidSize(Number(info.size)))throw Error('文件大小无效');let position=0;
+    return {size:Number(info.size),read:async(offset,length)=>{
+      active();
+      if(typeof window.XixuFile.readRange==='function')return archiveUnbase64(window.XixuFile.readRange(offset,length,info.selectionId,index));
+      if(offset!==position){const current=open();if(Number(current.size)!==Number(info.size))throw Error('所选文件已改变');position=0;while(position<offset){const skipped=archiveUnbase64(window.XixuFile.readChunk(Math.min(ARCHIVE_CHUNK_SIZE,offset-position)));if(!skipped.length)throw Error('文件读取不完整');position+=skipped.length}}
+      const bytes=archiveUnbase64(window.XixuFile.readChunk(length));position+=bytes.length;return bytes;
+    }};
+  }
+
   // Imported originals live outside the planner JSON. Rendering never inserts
   // user HTML: only escaped text, explicit breaks and verified raster images.
-  const ARCHIVE_FILE_LIMIT=20*1024*1024;
-  let archiveDraft=[],archiveError='',archiveHelp=false,archiveBusy=false,archiveProgress='',archiveToken=0,archiveQueue=Promise.resolve(),archiveDatabase=null;
+  let archiveQueue=Promise.resolve(),archiveDatabase=null;
   const archiveUrls=new Map();
   const archiveYield=()=>new Promise(resolve=>setTimeout(resolve,0));
   const archiveHashPattern=/^[a-f0-9]{64}$/;
@@ -1954,22 +2046,8 @@
   function archiveBase64(bytes){let binary='';for(let offset=0;offset<bytes.length;offset+=8192)binary+=String.fromCharCode(...bytes.subarray(offset,offset+8192));return btoa(binary)}
   function archiveUnbase64(value){const binary=atob(value),bytes=new Uint8Array(binary.length);for(let index=0;index<binary.length;index++)bytes[index]=binary.charCodeAt(index);return bytes}
   async function archiveSha(bytes){
-    if(globalThis.crypto?.subtle){try{return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(value=>value.toString(16).padStart(2,'0')).join('')}catch(_){}}
-    // SHA-256 fallback for resource:// contexts without WebCrypto. Work yields
-    // every 256 KiB rather than blocking the mobile UI on a large original.
-    const k=new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
-    const state=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]),words=new Uint32Array(64),rotate=(v,n)=>(v>>>n)|(v<<(32-n));
-    const blocks=Math.ceil((bytes.length+9)/64),tail=new Uint8Array(128);tail.set(bytes.subarray(Math.floor(bytes.length/64)*64));tail[bytes.length%64]=128;
-    const tailLength=bytes.length%64<56?64:128,tailView=new DataView(tail.buffer);tailView.setUint32(tailLength-8,Math.floor(bytes.length/0x20000000));tailView.setUint32(tailLength-4,(bytes.length*8)>>>0);
-    for(let block=0;block<blocks;block++){
-      const offset=block*64,view=offset+64<=bytes.length?new DataView(bytes.buffer,bytes.byteOffset+offset,64):new DataView(tail.buffer,(block-Math.floor(bytes.length/64))*64,64);
-      for(let j=0;j<16;j++)words[j]=view.getUint32(j*4);
-      for(let j=16;j<64;j++){const x=words[j-15],y=words[j-2];words[j]=(words[j-16]+(rotate(x,7)^rotate(x,18)^(x>>>3))+words[j-7]+(rotate(y,17)^rotate(y,19)^(y>>>10)))>>>0}
-      let [a,b,c,d,e,f,g,h]=state;
-      for(let j=0;j<64;j++){const t1=(h+(rotate(e,6)^rotate(e,11)^rotate(e,25))+((e&f)^(~e&g))+k[j]+words[j])>>>0,t2=((rotate(a,2)^rotate(a,13)^rotate(a,22))+((a&b)^(a&c)^(b&c)))>>>0;h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0}
-      [a,b,c,d,e,f,g,h].forEach((value,index)=>{state[index]=(state[index]+value)>>>0});if(block&&block%4096===0)await archiveYield();
-    }
-    return [...state].map(value=>value.toString(16).padStart(8,'0')).join('');
+    if(globalThis.crypto?.subtle&&bytes.length<=16*1024*1024){try{return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(value=>value.toString(16).padStart(2,'0')).join('')}catch(_){}}
+    const digest=new ArchiveDigest();for(let offset=0;offset<bytes.length;offset+=ARCHIVE_CHUNK_SIZE){digest.update(bytes.subarray(offset,offset+ARCHIVE_CHUNK_SIZE));await archiveYield()}return digest.finish().hash;
   }
   function archiveSerial(job){const next=archiveQueue.then(job);archiveQueue=next.catch(()=>{});return next}
   function archiveDb(){
@@ -1982,42 +2060,17 @@
     });return archiveDatabase;
   }
   async function archiveRead(key){
-    if(!archiveHashPattern.test(key))throw Error('原件编号无效');
-    const bytes=await archiveSerial(async()=>{
-      if(window.XixuArchive){
-        const size=Number(window.XixuArchive.beginRead(key));if(!Number.isInteger(size)||size<1||size>ARCHIVE_FILE_LIMIT)throw Error('原件大小无效');
-        const target=new Uint8Array(size);let offset=0;
-        try{while(offset<size){const chunk=archiveUnbase64(window.XixuArchive.readChunk(256*1024));if(!chunk.length||offset+chunk.length>size)throw Error('原件读取不完整');target.set(chunk,offset);offset+=chunk.length;await archiveYield()}return target}finally{window.XixuArchive.close()}
-      }
-      if(window.XixuStore)throw Error('此安装包尚未接入图文原件存储，请先更新应用');
-      const db=await archiveDb(),blob=await new Promise((resolve,reject)=>{const tx=db.transaction('assets','readonly'),request=tx.objectStore('assets').get(key);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(Error('原件读取失败'))});
-      if(!(blob instanceof Blob))throw Error('本机缺少图文原件，请重新导入保存的原始 HTML');
-      return new Uint8Array(await blob.arrayBuffer());
-    });
-    if(await archiveSha(bytes)!==key)throw Error('原件校验不一致，已停止展示；请保留文件并重新导入');return bytes;
+    const parts=[],result=await archiveWalk(key,async bytes=>parts.push(bytes.slice()));
+    const output=new Uint8Array(result.bytes);let offset=0;for(const part of parts){output.set(part,offset);offset+=part.length}return output;
   }
-  async function archiveStore(bytes,key){
-    if(!archiveHashPattern.test(key)||!bytes.length||bytes.length>ARCHIVE_FILE_LIMIT||await archiveSha(bytes)!==key)throw Error('原件校验失败');
-    await archiveSerial(async()=>{
-      if(window.XixuArchive){
-        try{if(window.XixuArchive.beginWrite(key,bytes.length)){for(let offset=0;offset<bytes.length;offset+=256*1024){if(!window.XixuArchive.writeChunk(archiveBase64(bytes.subarray(offset,offset+256*1024))))throw Error('原件写入失败');await archiveYield()}if(!window.XixuArchive.finishWrite())throw Error('原件未完整保存')}}finally{window.XixuArchive.close()}return;
-      }
-      if(window.XixuStore)throw Error('此安装包尚未接入图文原件存储，请先更新应用');
-      const db=await archiveDb();await new Promise((resolve,reject)=>{const tx=db.transaction('assets','readwrite'),store=tx.objectStore('assets'),existing=store.get(key);existing.onsuccess=()=>{if(existing.result===undefined)store.add(new Blob([bytes]),key)};tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(Error('原件没有保存，请检查本机可用空间'))});
-    });
-    const saved=await archiveRead(key);if(saved.length!==bytes.length)throw Error('原件保存后字节数不一致');
-  }
+  async function archiveStore(bytes,key){await archiveStoreSource(archiveBytesSource(bytes),key)}
   async function verifyNoteArchiveSources(list){
-    for(const note of list||[]){if(!note.archive)continue;try{await archiveRead(note.archive.originalHash);for(const image of note.archive.images)await archiveRead(image.hash)}catch(_){throw Error('备份中的图文原件未在本机完整就绪。请先重新导入原始 HTML，再恢复索引；现有资料未替换。')}}
+    for(const note of list||[]){if(!note.archive)continue;try{await archiveWalk(note.archive.originalHash);for(const image of note.archive.images)await archiveWalk(image.hash)}catch(_){throw Error('备份中的图文原件未在本机完整就绪。请先重新导入原始 HTML，再恢复索引；现有资料未替换。')}}
   }
   async function archiveSelectedBytes(file,index,selection){
-    if(window.XixuFile){
-      const info=JSON.parse(window.XixuFile.begin(index));if(selection.id!==undefined&&info.selectionId!==selection.id)throw Error('文件选择已变化，请重新选择');if(info.selectionId!==undefined)selection.id=info.selectionId;
-      const size=Number(info.size);if(!Number.isInteger(size)||size<1||size>ARCHIVE_FILE_LIMIT)throw Error('单个原文件必须小于等于 20 MiB');
-      const bytes=new Uint8Array(size);let offset=0;
-      while(offset<size){const chunk=archiveUnbase64(window.XixuFile.readChunk(256*1024));if(!chunk.length||offset+chunk.length>size)throw Error('文件读取不完整，未导入');bytes.set(chunk,offset);offset+=chunk.length;await archiveYield()}return bytes;
-    }
-    if(!file.size||file.size>ARCHIVE_FILE_LIMIT)throw Error('单个原文件必须小于等于 20 MiB');return new Uint8Array(await file.arrayBuffer());
+    const source=await archiveSelectedSource(file,index,selection);
+    if(!archiveValidSize(source.size)||source.size>DOCUMENT_WORKING_BYTES)throw Error('此文件请按原件方式归档，文字展开超出当前工作内存预算');
+    const bytes=new Uint8Array(source.size);for(let offset=0;offset<source.size;offset+=ARCHIVE_CHUNK_SIZE){const length=Math.min(ARCHIVE_CHUNK_SIZE,source.size-offset),part=await source.read(offset,length);if(part.length!==length)throw Error('文件读取不完整');bytes.set(part,offset);await archiveYield()}return bytes;
   }
   async function parseArchiveHtml(bytes,fileName){
     let raw;
@@ -2048,39 +2101,10 @@
     const name=String(fileName||'').split(/[\\/]/).at(-1),title=name.replace(/\.html?$/i,'');if(!title)throw Error('原文件名缺失，请核对后重试');
     return {title,text,images,layout,originalHash:await archiveSha(bytes),textHash:await archiveSha(new TextEncoder().encode(text)),fileName:name,fileBytes:bytes.length};
   }
-  async function prepareArchiveImport(fileList){
-    if(archiveBusy)return;const files=Array.from(fileList||[]),token=++archiveToken,selection={};archiveDraft=[];archiveError='';archiveHelp=false;
-    if(!files.length)return;if(files.length>500){notify('一次最多选择 500 个 HTML 文件');return}
-    const hdocCount=files.filter(file=>/\.hdoc$/i.test(file.name)).length;
-    if(hdocCount){archiveHelp=true;archiveError='本批包含 '+hdocCount+' 个 hdoc 原件，尚不能可靠解读其正文和图片。本批全部停止，没有新增或替换任何笔记，也没有读取或上传文件内容';openPanel({kind:'archive-import'});return}
-    if(files.some(file=>! /\.html?$/i.test(file.name))){notify('请选择华为导出的 HTML 文件；hdoc 尚不能解读');return}
-    archiveBusy=true;openPanel({kind:'archive-import'});
-    try{
-      if(storageBlocked)throw Error('本机资料读取异常，已停止导入以免覆盖资料');
-      if(window.XixuStore&&!window.XixuArchive)throw Error('请先安装支持图文原件存储的新版本');
-      if(window.XixuArchive?.status&&window.XixuArchive.status()!=='ready')throw Error('本机原件目录不可用，请检查存储空间后重试');
-      if(!window.XixuStore&&navigator.storage?.estimate){const capacity=await navigator.storage.estimate(),required=files.reduce((sum,file)=>sum+file.size*2,0);if(capacity.quota&&capacity.quota-(capacity.usage||0)<required+16*1024*1024)throw Error('可用存储不足，未导入或压缩内容');}
-      for(let index=0;index<files.length;index++){
-        if(token!==archiveToken)return;archiveProgress='正在核对 '+(index+1)+' / '+files.length;render(false);
-        const bytes=await archiveSelectedBytes(files[index],index,selection),parsed=await parseArchiveHtml(bytes,files[index].name);
-        if(token!==archiveToken)return;
-        await archiveStore(bytes,parsed.originalHash);
-        for(const image of parsed.images){await archiveStore(image.originalBytes,image.hash);delete image.originalBytes}
-        archiveDraft.push({...parsed,alreadyImported:notes.some(note=>note.archive?.originalHash===parsed.originalHash&&note.archive?.fileName===parsed.fileName)});
-        await archiveYield();
-      }
-    }catch(error){archiveError=String(error.message||'图文文件核对失败');archiveDraft=[]}
-    finally{if(window.XixuFile&&selection.id!==undefined)window.XixuFile.finish(selection.id);if(token===archiveToken){archiveBusy=false;archiveProgress='';if(panel?.kind==='archive-import')render(false)}}
-  }
-  function renderArchiveImport(){
-    const input='<input id="xixu-archive-files" type="file" multiple accept=".html,.htm,.hdoc,text/html" hidden>';
-    if(archiveHelp)return top('从华为备忘录迁移')+(archiveError?'<p class="tide-note warm" role="alert">'+esc(archiveError)+'</p>':'')+archiveExportHelp()+input;
-    if(archiveBusy)return top('核对图文原件')+'<p role="status">'+esc(archiveProgress||'准备原件存储…')+'</p><div class="tide-note">仅在本机核对并暂存原件，确认后才加入笔记。可以返回取消；不会修改华为备忘录。</div>'+input;
-    if(archiveError)return top('图文导入未完成')+'<div class="tide-note warm" role="alert">'+esc(archiveError)+'。没有新增或替换任何笔记，已读取的原件暂存仍保留。</div><button class="tide-primary" data-action="archive-pick">重新选择 HTML</button>'+input;
-    return top('核对华为图文')+'<div class="xixu-import-summary"><strong>'+archiveDraft.length+' 条 · '+archiveDraft.reduce((sum,item)=>sum+item.images.length,0)+' 张图片</strong></div><div class="tide-note">保留导出 HTML 及其中的图片字节和顺序，不再压缩。源编辑时间未提供，显示未知；不能保证华为导出前没有处理图片。相同正文不会自动合并。请先核对条数与图片数量。</div><form id="xixu-archive-review" class="xixu-note-import-list">'+archiveDraft.map((item,index)=>'<label><input type="checkbox" name="archiveImport" value="'+index+'" '+(item.alreadyImported?'':'checked')+'><span><strong>'+esc(item.title)+'</strong><small>'+item.images.length+' 张图片 · '+(item.fileBytes/1048576).toFixed(2)+' MiB · '+(item.alreadyImported?'同名原件已导入，可选择再保留一份':'原件保存后哈希核对通过')+'</small></span></label>').join('')+'<div class="tide-detail-actions"><button type="button" class="tide-secondary" data-action="archive-pick">重新选择</button><button class="tide-primary" type="submit" '+(!archiveDraft.length?'disabled':'')+'>确认导入图文</button></div></form>'+input;
-  }
+  function prepareArchiveImport(fileList){return prepareNoteImport(fileList)}
+  function renderArchiveImport(){return top('从华为备忘录迁移')+archiveExportHelp()+'<input id="xixu-archive-files" type="file" multiple accept=".html,.htm,.hdoc,text/html" hidden>'}
   function archiveExportHelp(){
-    return '<h2>只有 hdoc？先区分两个入口</h2><ol><li>在华为备忘录中<strong>打开一条备忘</strong>，不要停在多选列表。</li><li>找<strong>更多 → 导出</strong>，查看是否有 HTML。<strong>分享为备忘 → 另存为</strong>得到的通常是 hdoc，两者不是同一条路径。</li><li>若有 HTML，先导出一条带图片的备忘，在这里核对文字、图片数量和顺序；通过后再继续迁移。</li></ol><p class="tide-note">如果单条的“更多 → 导出”里确实也只有 hdoc，请保留所有原件，并提供这一层菜单截图（正文可遮住）。不同系统和内容的选项可能不同，不需要反复改扩展名或使用不明在线转换器。</p><p class="tide-note warm">当前 hdoc 不能直接转为可阅读、可检索的笔记。PDF/截图或 OCR 不能当作全量无损替代；未给出的原编辑时间也不会补造。迁移核对前不要删除华为备忘录或原文件。</p><p><a href="https://consumer.huawei.com/cn/support/content/zh-cn16070761/" target="_blank" rel="noopener noreferrer">查看华为官方导出说明</a></p><button class="tide-primary tide-full" data-action="archive-pick">选择导出文件并核对</button>';
+    return '<h2>直接选择备忘录导出文件</h2><p>HTML 可展开图文并检索；hdoc 可逐字节归档、核对 SHA-256 并原样导出。hdoc 正文尚未解析时会明确显示“仅原件”，不将文件名当作已恢复的正文。</p><p>若手机支持“打开单条备忘 → 更多 → 导出 → HTML”，可为同一条备忘另导出 HTML，补充可阅读内容。原件与源时间分别保留；未知的创建或编辑时间不会补造。</p><button class="tide-primary tide-full" data-action="archive-pick">选择导出文件并核对</button>';
   }
   function archiveLayoutHtml(archive){
     return archive.layout.map(item=>item.kind==='text'?esc(item.text):item.kind==='break'?'<br>':item.kind==='open'?'<div>':item.kind==='close'?'</div>':item.kind==='checkbox'?'<input type="checkbox" disabled aria-label="原件中的核对项" '+(item.checked?'checked':'')+'>':item.kind==='image'?'<img data-archive-hash="'+archive.images[item.index].hash+'" data-archive-mime="'+archive.images[item.index].mime+'" '+(archive.images[item.index].width?'style="aspect-ratio:'+archive.images[item.index].width+'/'+archive.images[item.index].height+';width:100%" ':'')+'alt="导入图片 '+(item.index+1)+'" loading="lazy">':'').join('');
@@ -2090,7 +2114,7 @@
     const note=notes.find(item=>item.id===id);if(!note?.archive||panel?.editArchive)return memoryWithoutArchive(id);
     const archive=note.archive;
     const addedImages=normalizeAttachments(note.images);
-    const originalLabel=archive.version===2?'导出原文件':'导出原始 HTML',notice=archive.version===2?'保留原始 '+esc(archive.format.toUpperCase())+' 文件与 '+archive.images.length+' 张阅读图片。文字视图用于检索，原文档版式以原文件为准。':'保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。';
+    const originalLabel=archive.version===2?'导出原文件':'导出原始 HTML',notice=archive.projectionStatus==='original-only'?'原文件已完整归档，正文与内嵌图片尚未展开，可核对哈希并原样导出。':archive.version===2?'保留原始 '+esc(archive.format.toUpperCase())+' 文件与 '+archive.images.length+' 张阅读图片。文字视图用于检索，原文档版式以原文件为准。':'保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。';
     return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">'+notice+'</div>'+(archive.warnings||[]).map(text=>'<p class="tide-note">'+esc(text)+'</p>').join('')+'<article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article><p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">'+originalLabel+'</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
   };
   async function hydrateNoteArchive(){
@@ -2099,18 +2123,18 @@
     const needed=new Set([...article.querySelectorAll('[data-archive-hash]')].map(image=>image.dataset.archiveHash));
     for(const [key,url] of archiveUrls){if(!needed.has(key)){URL.revokeObjectURL(url);archiveUrls.delete(key)}}
     try{
-      const note=notes.find(item=>item.id===article.dataset.noteId);if(note?.archive)await archiveRead(note.archive.originalHash);
+      const note=notes.find(item=>item.id===article.dataset.noteId);if(note?.archive)await archiveWalk(note.archive.originalHash);
       for(const image of article.querySelectorAll('[data-archive-hash]')){
         if(!article.isConnected)return;const key=image.dataset.archiveHash;
         if(!archiveUrls.has(key)){const bytes=await archiveRead(key);if(!article.isConnected)return;archiveUrls.set(key,URL.createObjectURL(new Blob([bytes],{type:image.dataset.archiveMime})))}
         if(image.isConnected){image.addEventListener('error',()=>{if(article.isConnected)main.querySelector('.xixu-archive-status').textContent='有图片无法显示，原件字节仍保留，请核对导出文件'},{once:true});image.src=archiveUrls.get(key);}
       }
-      if(article.isConnected)main.querySelector('.xixu-archive-status').textContent='图片字节校验通过';
+      if(article.isConnected)main.querySelector('.xixu-archive-status').textContent='已核对所显示原件与图片的字节校验值';
     }catch(error){if(article.isConnected)main.querySelector('.xixu-archive-status').textContent=error.message}
   }
   const settingsWithoutArchive=renderSettings;
   renderSettings=function(){
-    let html=settingsWithoutArchive()+'<div class="tide-section"><h2>华为图文迁移</h2></div><button class="tide-secondary tide-full" data-action="archive-pick">'+icon('folder-input')+'导入华为 HTML 图文</button><button class="tide-secondary tide-full" data-action="archive-help">只能导出 hdoc？</button><input id="xixu-archive-files" type="file" multiple accept=".html,.htm,.hdoc,text/html" hidden><div class="tide-note">可迁移 HTML 图文；hdoc 仅提供格式提示，尚不能解读。一次最多选择 500 条 HTML，单条最大 20 MiB。原件独立保存，未确认完整的格式会停止，不会压缩或裁剪资料。</div>';
+    let html=settingsWithoutArchive()+'<div class="tide-section"><h2>华为图文迁移</h2></div><button class="tide-secondary tide-full" data-action="archive-pick">'+icon('folder-input')+'导入华为备忘录原件</button><button class="tide-secondary tide-full" data-action="archive-help">查看导入方式</button><input id="xixu-archive-files" type="file" multiple accept=".html,.htm,.hdoc,text/html" hidden><div class="tide-note">可展开 HTML 图文，或完整归档 hdoc。原件按块保存，文件容量受设备可用空间影响；展开失败会在核对页显示原件状态。</div>';
     if(notes.some(note=>note.archive)){html=html.replace('导出全部数据','导出索引与其他数据').replace('可以随时导出独立备份，包含课表、事项、碎片、笔记、图片和考核方式。不会包含 DeepSeek API Key。','JSON 保存索引与其他资料，不包含独立存储的图文原件，也不包含 API Key。');html+='<div class="tide-note warm">图文原件独立保存在本机，不随 JSON 索引备份或云索引同步。请保留华为导出的全部 HTML，或在每条笔记中导出原始 HTML；跨设备恢复须同时携带这些原件。不要仅备份 JSON 后卸载应用。</div>'}
     return html;
   };
@@ -2118,42 +2142,28 @@
   root.addEventListener('change',event=>{if(event.target.id==='xixu-archive-files'){event.stopImmediatePropagation();prepareArchiveImport(event.target.files);event.target.value=''}},true);
   root.addEventListener('click',async event=>{
     const button=event.target.closest('[data-action]');if(!button)return;const action=button.dataset.action;
-    if(archiveBusy&&['back','nav'].includes(action)){archiveToken++;archiveBusy=false;archiveDraft=[];return}
     if(!['archive-pick','archive-help','archive-edit','archive-export'].includes(action))return;event.preventDefault();event.stopImmediatePropagation();
-    if(action==='archive-help'){archiveHelp=true;archiveDraft=[];archiveError='';openPanel({kind:'archive-import'});return}
+    if(action==='archive-help'){openPanel({kind:'archive-import'});return}
     if(action==='archive-pick'){main.querySelector('#xixu-archive-files')?.click();return}
     const note=notes.find(item=>item.id===button.dataset.id);if(!note?.archive)return;
     if(action==='archive-edit'){openPanel({kind:'memory',id:note.id,editArchive:true});return}
     try{
-      await archiveRead(note.archive.originalHash);
+      await archiveWalk(note.archive.originalHash);
       if(window.XixuArchive){if(!window.XixuArchive.exportFile(note.archive.originalHash,note.archive.fileName))throw Error('没有取得原件导出权限')}
       else{const bytes=await archiveRead(note.archive.originalHash),url=URL.createObjectURL(new Blob([bytes],{type:documentMime(note.archive.fileName)})),link=document.createElement('a');link.href=url;link.download=note.archive.fileName;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
     }catch(error){notify(error.message)}
   },true);
-  root.addEventListener('submit',async event=>{
-    if(event.target.id!=='xixu-archive-review')return;event.preventDefault();event.stopImmediatePropagation();if(archiveBusy)return;
-    const selected=new Set(new FormData(event.target).getAll('archiveImport').map(Number)),chosen=archiveDraft.filter((_,index)=>selected.has(index));if(!chosen.length){notify('请至少选择一条图文');return}
-    archiveBusy=true;const token=++archiveToken,submit=event.target.querySelector('[type="submit"]');submit.disabled=true;
-    try{
-      if(storageBlocked)throw Error('本机资料读取异常，未写入');
-      for(const item of chosen){await archiveRead(item.originalHash);for(const image of item.images)await archiveRead(image.hash)}
-      if(token!==archiveToken)throw Error('已取消确认，本次没有新增笔记');
-      const now=new Date().toISOString(),added=chosen.map(item=>({id:uid(),title:item.title,text:item.text,category:'笔记',course:'',images:[],createdAt:'',updatedAt:'',importedAt:now,archive:{version:1,originalHash:item.originalHash,fileName:item.fileName,fileBytes:item.fileBytes,textHash:item.textHash,images:item.images,layout:item.layout}}));
-      const oldNotes=notes,oldSaved=lastSaved;notes=[...notes,...added];
-      try{const value=JSON.stringify(checkData(snapshot(),false));storageWrite(value);lastSaved=value;saveError.hidden=true}catch(error){notes=oldNotes;lastSaved=oldSaved;throw Error('笔记索引未保存，原有资料未替换；请检查本机容量')}
-      archiveDraft=[];panel=null;previousPanel=null;page='notes';archiveBusy=false;render(false);notify('已导入 '+added.length+' 条图文；源编辑时间未知');if(typeof assistantMineRecords==='function')assistantMineRecords(assistantSourceRecords().filter(record=>added.some(item=>'note:'+item.id===record.id)));
-    }catch(error){archiveBusy=false;notify(error.message);if(submit.isConnected)submit.disabled=false}
-  },true);
 
   // Document projections are for reading/search. The exact input bytes remain
   // in the content-addressed archive and are exported without re-encoding.
-  const DOCUMENT_FORMATS=['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp'];
-  const NOTE_IMPORT_ACCEPT='.txt,.md,.markdown,.csv,.html,.htm,.json,.docx,.pdf,.png,.jpg,.jpeg,.webp';
+  const DOCUMENT_FORMATS=['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp','hdoc','doc'];
+  const NOTE_IMPORT_ACCEPT='.txt,.md,.markdown,.csv,.html,.htm,.json,.docx,.pdf,.png,.jpg,.jpeg,.webp,.hdoc,.doc';
   let noteImportBusy=false,noteImportGeneration=0;
-  const DOCUMENT_IMAGE_BUDGET=64*1024*1024;
+  const DOCUMENT_WORKING_BYTES=64*1024*1024,DOCUMENT_IMAGE_BUDGET=64*1024*1024;
+  let documentImportProgress='';
   function documentMime(name){
     const ext=String(name).split('.').pop().toLowerCase();
-    return ({pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',html:'text/html',htm:'text/html',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',json:'application/json'})[ext]||'text/plain';
+    return ({hdoc:'application/octet-stream',doc:'application/msword',pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',html:'text/html',htm:'text/html',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',json:'application/json'})[ext]||'text/plain';
   }
   function documentText(bytes){
     let text;
@@ -2236,21 +2246,41 @@
   async function documentPdf(bytes){
     if(!globalThis.pdfjsLib?.getDocument)throw Error('PDF 读取组件未就绪');
     if(String.fromCharCode(...bytes.subarray(0,5))!=='%PDF-')throw Error('文件不是完整的 PDF');
-    let pdf;const images=[],layout=[],plain=[],warnings=['PDF 页面是阅读预览，提取文字的顺序请核对；原始 PDF 字节完整保留。'];
+    let pdf;const generation=noteImportGeneration,images=[],layout=[],plain=[],unread=[],warnings=['保留原始 PDF 和逐页图像。文字层与 OCR 是检索副本，可以对照页面核对。'];
     try{
       pdf=await pdfjsLib.getDocument({data:bytes.slice(),cMapUrl:'cmaps/',cMapPacked:true,isEvalSupported:false}).promise;
-      if(!pdf.numPages||pdf.numPages>50)throw Error('文档导入一次支持最多 50 页 PDF，超限不会截取前几页');
-      let imageBytes=0;
+      if(!pdf.numPages)throw Error('PDF 没有可读取的页面');
       for(let index=1;index<=pdf.numPages;index++){
-        const page=await pdf.getPage(index),content=await page.getTextContent(),text=content.items.map(item=>item.str+(item.hasEOL?'\n':' ')).join('');plain.push(text);
-        const base=page.getViewport({scale:1}),scale=Math.min(1.5,Math.sqrt(2000000/(base.width*base.height))),viewport=page.getViewport({scale}),canvas=document.createElement('canvas');
+        if(generation!==noteImportGeneration)throw Error('已取消文档导入');
+        documentImportProgress='正在处理 PDF 第 '+index+' / '+pdf.numPages+' 页';if(panel?.kind==='note-import')render(false);
+        const page=await pdf.getPage(index),content=await page.getTextContent();let text=content.items.map(item=>item.str+(item.hasEOL?'\n':' ')).join('');
+        const base=page.getViewport({scale:1}),scale=Math.min(1.75,Math.sqrt(2000000/(base.width*base.height))),viewport=page.getViewport({scale}),canvas=document.createElement('canvas');
         canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
-        try{await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('PDF 页面预览失败');const data=new Uint8Array(await blob.arrayBuffer());imageBytes+=data.length;if(imageBytes>DOCUMENT_IMAGE_BUDGET)throw Error('PDF 页面预览总量超过 64 MiB，未裁剪或导入');const picture=await documentPicture(data,'image/png');images.push({...picture,width:canvas.width,height:canvas.height});layout.push({kind:'text',text:'第 '+index+' 页'},{kind:'break'},{kind:'image',index:images.length-1},{kind:'break'})}finally{canvas.width=0;canvas.height=0;page.cleanup()}
-        if(plain.join('\n\n').length>50000)throw Error('PDF 提取文字超过 50000 字符，未截断导入');await archiveYield();
+        try{
+          await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+          if(text.replace(/\s/g,'').length<20&&window.XixuOCR?.recognizeDocumentPage){
+            try{const scan=await recognizePdfPage(window.XixuOCR,canvas.toDataURL('image/png'),index);if(String(scan.value||'').trim())text=String(scan.value)}catch(_){unread.push(index)}
+          }
+          if(!text.trim()&&!unread.includes(index))unread.push(index);
+          plain.push(text);
+          const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('PDF 页面预览失败');
+          const data=new Uint8Array(await blob.arrayBuffer()),picture=await documentPicture(data,'image/png');
+          // Store a page before processing the next one; do not retain all rasters in RAM.
+          await archiveStore(data,picture.hash);delete picture.originalBytes;
+          images.push({...picture,width:canvas.width,height:canvas.height});layout.push({kind:'text',text:'第 '+index+' 页'},{kind:'break'},{kind:'image',index:images.length-1},{kind:'break'});
+        }finally{canvas.width=0;canvas.height=0;page.cleanup()}
+        await archiveYield();
       }
-      if(!plain.join('').trim())warnings.push('这是无可提取文字的 PDF；已保存原件与全部页面预览，尚不能按图片中的文字检索。');
+      if(unread.length)warnings.push('第 '+unread.slice(0,20).join('、')+(unread.length>20?' 等 '+unread.length+' 页':' 页')+'尚未获得可靠文字；原件和页面仍保留。手机 App 可使用本机 OCR，识别文字请对照页面核对。');
       return {text:plain.join('\n\n'),images,layout,warnings};
-    }catch(error){throw Error(error.name==='PasswordException'?'暂不支持加密 PDF，请保留原件':error.message||'PDF 读取失败')}finally{await pdf?.destroy()}
+    }catch(error){throw Error(error.name==='PasswordException'?'加密 PDF 以原件归档；解锁后可重新提取文字':error.message||'PDF 读取失败')}finally{documentImportProgress='';await pdf?.destroy()}
+  }
+  async function documentOriginalOnly(source,fileName,reason){
+    const saved=await archiveStoreSource(source),format=String(fileName).split('.').pop().toLowerCase();
+    return {title:titleFromFile(fileName,''),text:'',images:[],archive:{version:2,format:DOCUMENT_FORMATS.includes(format)?format:'bin',fileName,fileBytes:saved.bytes,originalHash:saved.hash,textHash:await archiveSha(new Uint8Array()),images:[],layout:[],projectionStatus:'original-only',warnings:[String(reason).slice(0,480)+'。已完整归档原文件，可核对哈希并原样导出；正文和内嵌图片尚未展开。']}};
+  }
+  function documentTextParts(text){
+    const parts=[];for(let offset=0;offset<text.length;){let end=Math.min(text.length,offset+50000);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;parts.push(text.slice(offset,end));offset=end}return parts.length?parts:[''];
   }
   async function parseArchiveDocument(bytes,fileName){
     const format=String(fileName).split('.').pop().toLowerCase();
@@ -2261,7 +2291,7 @@
     else if(format==='pdf')parsed=await documentPdf(bytes);
     else if(['png','jpg','jpeg','webp'].includes(format))parsed={text:'',images:[await documentPicture(bytes,documentMime(fileName))],layout:[{kind:'image',index:0}]};
     else{const text=documentText(bytes);parsed={text,images:[],layout:[{kind:'text',text}]}}
-    if((!parsed.text.trim()&&!parsed.images.length)||parsed.text.length>50000||parsed.layout.length>10000||parsed.images.length>500||parsed.images.reduce((sum,picture)=>sum+picture.bytes,0)>DOCUMENT_IMAGE_BUDGET)throw Error('内容为空或超出文档导入范围，未压缩、裁剪或导入');
+    if((!parsed.text.trim()&&!parsed.images.length)||parsed.layout.length>10000||parsed.images.length>500||format!=='pdf'&&parsed.images.reduce((sum,picture)=>sum+picture.bytes,0)>DOCUMENT_IMAGE_BUDGET)throw Error('内容为空或超出文档导入范围，未压缩、裁剪或导入');
     return {...parsed,title:parsed.title||titleFromFile(fileName,parsed.text),fileName,format,warnings:parsed.warnings||[],fileBytes:bytes.length,originalHash:await archiveSha(bytes),textHash:await archiveSha(new TextEncoder().encode(parsed.text))};
   }
   async function archiveDocumentProjection(parsed,bytes){
@@ -2368,7 +2398,7 @@
       documents.push({documentId:'course:'+item.id,id:item.id,kind:'课程',recordType:'course',title:String(item.name||''),text:ragCourseText(item,rows),action:'course',courseId:item.id,courseName:String(item.name||''),date:'',dates:[...new Set(dates)].sort(),time:'',done:false,updatedAt:'',imageCount:item.image?1:0});
     }
     for(const item of tasks)documents.push({documentId:'task:'+item.id,id:item.id,kind:types[item.type]||'任务',recordType:'task',taskType:item.type,title:String(item.title||''),text:[item.title,item.note,courseNames.get(item.course),...(item.sessions||[]).map(session=>session.date+' '+session.time+' '+session.minutes+'分钟')].filter(Boolean).join('\n'),action:'task-detail',courseId:item.course||'',courseName:courseNames.get(item.course)||'',date:item.date||'',dates:[item.date].filter(Boolean),time:item.time||'',done:Boolean(item.done),updatedAt:item.updatedAt||item.date||'',imageCount:item.images?.length||0});
-    for(const item of notes)documents.push({documentId:'note:'+item.id,id:item.id,kind:item.category||'笔记',recordType:'note',title:String(item.title||''),text:String(item.text??''),action:'memory',courseId:item.course||'',courseName:courseNames.get(item.course)||'',date:String(item.updatedAt||item.createdAt||'').slice(0,10),dates:[String(item.updatedAt||item.createdAt||'').slice(0,10)],time:'',done:false,updatedAt:String(item.updatedAt||item.createdAt||''),imageCount:(item.images?.length||0)+(item.archive?.images?.length||0)});
+    for(const item of notes)documents.push({documentId:'note:'+item.id,id:item.id,kind:item.category||'笔记',recordType:'note',title:String(item.title||''),text:item.archive?.projectionStatus==='original-only'?'[原文件仅归档，未解析正文；以下如有文字为用户补充记录]\n'+String(item.text??''):String(item.text??''),action:'memory',courseId:item.course||'',courseName:courseNames.get(item.course)||'',date:String(item.updatedAt||item.createdAt||'').slice(0,10),dates:[String(item.updatedAt||item.createdAt||'').slice(0,10)],time:'',done:false,updatedAt:String(item.updatedAt||item.createdAt||''),imageCount:(item.images?.length||0)+(item.archive?.images?.length||0)});
     for(const item of scratchEntries)documents.push({documentId:'scratch:'+item.id,id:item.id,kind:'碎片',recordType:'scratch',title:scratchTitle(item.text),text:String(item.text??''),action:'scratch-detail',courseId:'',courseName:'',date:String(item.updatedAt||item.createdAt||'').slice(0,10),dates:[String(item.updatedAt||item.createdAt||'').slice(0,10)],time:'',done:false,updatedAt:String(item.updatedAt||item.createdAt||''),imageCount:0});
     return documents;
   }
@@ -2620,7 +2650,7 @@
       id:[source.document_id,source.version,source.start,source.end].join(':'),
       documentId:'computer:'+source.document_id,chunkId:'computer:'+source.id,title:String(source.title||'电脑资料'),
       text:String(source.text||'').slice(0,900),recordType:'external',kind:'电脑资料',action:'knowledge-source',
-      chunkStart:source.start,chunkEnd:source.end,sourceExcerpt:true,score:source.score||0,reasons:['电脑知识库检索']
+      metadata:source.metadata||{},chunkStart:source.start,chunkEnd:source.end,sourceExcerpt:true,score:source.score||0,reasons:['电脑知识库检索']
     }));
   }
   function knowledgeSettingsHtml(){
@@ -2690,11 +2720,11 @@
       const sentAssets=new Set();
       for(let index=0;index<copy.length;index++){
         active();const note=copy[index],assets=new Map();
-        if(note.archive){assets.set(note.archive.originalHash,()=>archiveRead(note.archive.originalHash));for(const image of note.archive.images)assets.set(image.hash,()=>archiveRead(image.hash))}
-        for(const image of note.images||[]){const match=/^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(image.dataUrl||'');if(!match)throw Error('有图片编码无法核对，未提交快照');const bytes=archiveUnbase64(match[1]),hash=await archiveSha(bytes);assets.set(hash,async()=>bytes);image.hash=hash;image.bytes=bytes.length;delete image.dataUrl}
-        for(const [hash,read] of assets){
-          active();if(sentAssets.has(hash))continue;const bytes=await read();if(await archiveSha(bytes)!==hash)throw Error('原件哈希不一致，未提交快照');
-          for(let offset=0;offset<bytes.length;offset+=128*1024){active();knowledgeSyncProgress('同步第 '+(index+1)+' / '+copy.length+' 条笔记的原件…');await knowledgeCall('sync-asset',{session,hash,offset,total:bytes.length,data:archiveBase64(bytes.subarray(offset,offset+128*1024))});await archiveYield()}
+        if(note.archive){assets.set(note.archive.originalHash,{size:note.archive.fileBytes,walk:consume=>archiveWalk(note.archive.originalHash,consume)});for(const image of note.archive.images)assets.set(image.hash,{size:image.bytes,walk:consume=>archiveWalk(image.hash,consume)})}
+        for(const image of note.images||[]){const match=/^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(image.dataUrl||'');if(!match)throw Error('有图片编码无法核对，未提交快照');const bytes=archiveUnbase64(match[1]),hash=await archiveSha(bytes);assets.set(hash,{size:bytes.length,walk:consume=>archiveDigestSource(archiveBytesSource(bytes),consume)});image.hash=hash;image.bytes=bytes.length;delete image.dataUrl}
+        for(const [hash,asset] of assets){
+          active();if(sentAssets.has(hash))continue;const checked=await asset.walk();if(checked.hash!==hash||checked.bytes!==asset.size)throw Error('原件哈希或大小不一致，未提交快照');
+          await asset.walk(async(bytes,position)=>{for(let at=0;at<bytes.length;at+=128*1024){active();knowledgeSyncProgress('同步第 '+(index+1)+' / '+copy.length+' 条笔记的原件…');await knowledgeCall('sync-asset',{session,hash,offset:position+at,total:asset.size,data:archiveBase64(bytes.subarray(at,at+128*1024))});await archiveYield()}});
           sentAssets.add(hash);
         }
         const bytes=new TextEncoder().encode(JSON.stringify(note)),parts=Math.max(1,Math.ceil(bytes.length/(128*1024)));
@@ -2974,6 +3004,8 @@ function parseClassPeriods(value){
   }
   function agentActionHtml(action){
     if(!action||action.type==='none')return '';
+    if(action.type==='review_temporal')return '<div class="xixu-agent-action"><button class="tide-secondary" data-action="assistant-temporal-review">核对哪条通知为准</button></div>';
+    if(action.type==='search_web')return '<div class="xixu-agent-action"><strong>'+esc(action.query)+'</strong><button class="tide-secondary" data-action="assistant-start-web" data-query="'+esc(action.query)+'">核对后联网搜索</button></div>';
     if(action.type==='swap_schedule'){
       return '<div class="xixu-agent-action xixu-reschedule-preview"><span>'+icon('calendar-sync')+'互换课程</span><strong>'+esc(({全天:'全天',上午:'上午',下午:'下午',晚上:'晚上',指定节次:'指定节次'})[action.scopeLabel]||action.scopeLabel)+' · '+action.courseNames.length+' 门课</strong><div class="xixu-agent-edit-grid">'+agentEditField('原日期','firstDate',action.firstDate,'date')+agentEditField('节次','firstPeriods',agentPeriodValue(action.firstPeriods),'text','inputmode="numeric"')+agentEditField('新日期','secondDate',action.secondDate,'date')+agentEditField('节次','secondPeriods',agentPeriodValue(action.secondPeriods),'text','inputmode="numeric"')+'</div><small>'+esc(action.courseNames.join('、'))+'。只会调整这两个日期。</small><div class="tide-detail-actions"><button class="tide-secondary" data-action="agent-dismiss">暂不处理</button><button class="tide-primary" data-action="agent-confirm">确认互换</button></div></div>';
     }
@@ -3017,7 +3049,7 @@ function parseClassPeriods(value){
   function agentRefsHtml(refs){
     const unique=[...new Map((refs||[]).map(ref=>[ref.documentId||ref.sourceId||(ref.recordType||ref.kind)+':'+ref.id,ref])).values()];
     if(!unique.length)return '';
-    return '<details class="xixu-agent-refs"><summary>'+icon('book-open')+'本次检索资料 · '+unique.length+'<span>'+icon('chevron-down')+'</span></summary><div>'+unique.map(ref=>'<div class="xixu-agent-ref"><button data-action="'+esc(ref.action)+'" data-id="'+esc(ref.id)+'" aria-label="打开原文：'+esc(ref.title)+'"><small>'+esc(ref.recordType==='course'||ref.kind==='课程'?'课程':ref.recordType==='scratch'||ref.kind==='碎片'?'碎片':memoryCategoryLabel(ref.kind))+'</small><span>'+esc(ref.title)+'</span>'+icon('arrow-up-right')+'</button>'+(ref.text?'<p aria-label="检索片段" title="'+(ref.partial||ref.sourceExcerpt?'这是检索片段，完整内容请打开原文':'本次检索文本')+'">'+esc(ref.text)+'</p>':'')+'</div>').join('')+'</div></details>';
+    return '<details class="xixu-agent-refs"><summary>'+icon('book-open')+'本次检索资料 · '+unique.length+'<span>'+icon('chevron-down')+'</span></summary><div>'+unique.map(ref=>'<div class="xixu-agent-ref"><button data-action="'+esc(ref.action)+'" data-id="'+esc(ref.id)+'" data-url="'+esc(ref.url||'')+'" aria-label="打开原文：'+esc(ref.title)+'"><small>'+esc(ref.recordType==='web'?'网页':ref.recordType==='course'||ref.kind==='课程'?'课程':ref.recordType==='scratch'||ref.kind==='碎片'?'碎片':memoryCategoryLabel(ref.kind))+'</small><span>'+esc(ref.title)+'</span>'+icon('arrow-up-right')+'</button>'+(ref.text?'<p aria-label="检索片段" title="'+(ref.partial||ref.sourceExcerpt?'这是检索片段，完整内容请打开原文':'本次检索文本')+'">'+esc(ref.text)+'</p>':'')+'</div>').join('')+'</div></details>';
   }
   function renderAgent(){
     agentConversationMetadata();
@@ -3044,7 +3076,7 @@ function parseClassPeriods(value){
     const retrievalRefs=(result.refs||[]).slice(0,6).map(ref=>{
       let text=String(ref.text||'').slice(0,900);if(/[\uD800-\uDBFF]$/.test(text))text=text.slice(0,-1);
       const excerptStart=Number(ref.chunkStart||0),sourceEnd=Number(ref.chunkEnd)||excerptStart+text.length;
-      return {...Object.fromEntries(['documentId','chunkId','id','title','action','kind','recordType','date'].map(key=>[key,String(ref[key]||'').slice(0,200)])),sourceId:String(ref.sourceId||ref.chunkId||'').slice(0,200),text,excerptStart,excerptEnd:Math.min(sourceEnd,excerptStart+text.length),partial:Boolean(ref.sourceExcerpt||ref.truncated||String(ref.text||'').length>text.length)};
+      return {...Object.fromEntries(['documentId','chunkId','id','title','action','kind','recordType','date'].map(key=>[key,String(ref[key]||'').slice(0,200)])),url:String(ref.url||'').slice(0,4096),sourceId:String(ref.sourceId||ref.chunkId||'').slice(0,200),text,excerptStart,excerptEnd:Math.min(sourceEnd,excerptStart+text.length),partial:Boolean(ref.sourceExcerpt||ref.truncated||String(ref.text||'').length>text.length)};
     });
     agentHistory.splice(index+1,0,{id:uid(),conversationId,role:'assistant',text:result.answer,source:result.source||'local',createdAt:now,retrievalRefs});
     agentConversationResults.set(conversationId,result);if(activeConversationId()===conversationId)agentDraft=result;
@@ -3125,13 +3157,14 @@ function parseClassPeriods(value){
     else if(button.dataset.action==='agent-dismiss'&&agentDraft){agentDraft.action={type:'none'};render()}
   });
 
-  // Generated from shared JSON manifests; do not edit by hand.
-  const XIXU_TOOL_MANIFEST={"version":1,"tools":[{"name":"create_event","description":"准备创建会议、考试或截止事项；返回预览，确认后才写入","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["title","date","time","type"],"properties":{"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"type":{"type":"string","enum":["homework","exam","meeting"]},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"course_name":{"type":"string","maxLength":80},"note":{"type":"string","maxLength":1000}}}},{"name":"create_todo","description":"准备创建普通待办；时间可留空，确认后才写入","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["title","date"],"properties":{"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"course_name":{"type":"string","maxLength":80},"note":{"type":"string","maxLength":1000}}}},{"name":"update_event","description":"准备修改已核对来源的事项；必须有真实任务编号与版本，不能直接执行","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["task_id"],"properties":{"task_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"note":{"type":"string","maxLength":1000}}}},{"name":"search_notes","description":"只读查找本机笔记并返回带来源的片段，不修改资料","readOnly":true,"requiresConfirmation":false,"inputSchema":{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":2000},"limit":{"type":"integer","minimum":1,"maximum":20},"date_from":{"type":"string","format":"date"},"date_to":{"type":"string","format":"date"}}}},{"name":"get_schedule","description":"只读查询实际日期课程、事项与截止压力，显式区分硬占用和截止点","readOnly":true,"requiresConfirmation":false,"inputSchema":{"type":"object","additionalProperties":false,"required":["date"],"properties":{"date":{"type":"string","format":"date"},"start_time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"end_time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"exclude_task_id":{"type":"string","maxLength":128}}}}]};
+// Shared source contracts; generated by text serialization.
+  const XIXU_TOOL_MANIFEST={"version":1,"tools":[{"name":"create_event","description":"准备创建会议、考试或截止事项；返回预览，确认后才写入","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["title","date","time","type"],"properties":{"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"type":{"type":"string","enum":["homework","exam","meeting"]},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"course_name":{"type":"string","maxLength":80},"note":{"type":"string","maxLength":1000}}}},{"name":"create_todo","description":"准备创建普通待办；时间可留空，确认后才写入","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["title","date"],"properties":{"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"course_name":{"type":"string","maxLength":80},"note":{"type":"string","maxLength":1000}}}},{"name":"update_event","description":"准备修改已核对来源的事项；必须有真实任务编号与版本，不能直接执行","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["task_id"],"properties":{"task_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"note":{"type":"string","maxLength":1000}}}},{"name":"search_notes","description":"只读查找本机笔记并返回带来源的片段，不修改资料","readOnly":true,"requiresConfirmation":false,"inputSchema":{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":2000},"limit":{"type":"integer","minimum":1,"maximum":20},"date_from":{"type":"string","format":"date"},"date_to":{"type":"string","format":"date"}}}},{"name":"get_schedule","description":"只读查询实际日期课程、事项与截止压力，显式区分硬占用和截止点","readOnly":true,"requiresConfirmation":false,"inputSchema":{"type":"object","additionalProperties":false,"required":["date"],"properties":{"date":{"type":"string","format":"date"},"start_time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"end_time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"exclude_task_id":{"type":"string","maxLength":128}}}},{"name":"search_web","description":"建议公开网页搜索；只读但需用户另行核对搜索词，不能自动发送私人资料","readOnly":true,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":2000},"limit":{"type":"integer","minimum":1,"maximum":8}}}}]};
   const XIXU_PROVIDER_CATALOG={"version":1,"providers":[{"id":"deepseek","label":"DeepSeek","base_url":"https://api.deepseek.com","api":"chat","model":"deepseek-flash"},{"id":"qwen","label":"通义千问","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","api":"chat","model":"qwen-plus"},{"id":"kimi","label":"Kimi","base_url":"https://api.moonshot.cn/v1","api":"chat","model":""},{"id":"doubao","label":"豆包 / 火山方舟","base_url":"https://ark.cn-beijing.volces.com/api/v3","api":"chat","model":""},{"id":"openai","label":"OpenAI","base_url":"https://api.openai.com/v1","api":"responses","model":""},{"id":"gemini","label":"Gemini（兼容接口）","base_url":"https://generativelanguage.googleapis.com/v1beta/openai","api":"chat","model":""},{"id":"claude","label":"Claude","base_url":"https://api.anthropic.com/v1","api":"messages","model":""},{"id":"custom","label":"自定义 HTTPS 接口","base_url":"","api":"chat","model":""}],"defaultCapabilities":{"stream":true,"structured":false,"vision":false,"tools":false,"reasoning":false},"notice":"配置入口和协议适配不等于所有模型均已验证。模型名称及能力以所选模型官方说明为准。密钥不包含在清单或资料备份中。"};
 
 // Pure routing policy, also consumed by the opt-in offline evaluation runner.
 function assistantRouteIntent(input,pending=false){
   const text=String(input||'').normalize('NFKC').trim();
+  if(/联网|上网|网页搜索|全网|网上查|web search/i.test(text)&&!/(?:不用|不要|无需|不必|不想|不需要|别)[^，。！？\n]{0,8}(?:联网|上网|网页搜索|全网|网上查)/.test(text))return 'search_web';
   if(pending&&/^(?:算了|取消|不用了|重新开始)[。！!\s]*$/.test(text))return 'cancel_pending';
   if(/调课|换课|互换|对调|节.*(?:调到|改到|换到)|(?:把|将).*(?:课|节).*(?:调到|改到|换到)/.test(text))return 'reschedule';
   const question=/是什么|什么意思|什么时候|几点|多少|几项|怎么|怎样|如何|为什么|哪里|能否|是否|[?？]|吗\s*$/.test(text),explicit=/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想要?|我要)\s*)?(?:添加|新增|创建|安排|提醒我|记录|记下|记住|记一下|新建|保存|修改|更新|删除|完成)/.test(text);
@@ -3163,6 +3196,19 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     for(const [key,max] of [['journal',1000],['traces',300],['commitments',10000]])if(!Array.isArray(value[key])||value[key].length>max)throw Error('助手记录不完整或超出容量，请保留原备份。');
     if(!value.pendingSlots||typeof value.pendingSlots!=='object'||Array.isArray(value.pendingSlots)||!value.taskProgress||typeof value.taskProgress!=='object'||Array.isArray(value.taskProgress))throw Error('助手状态不完整。');
     for(const entry of value.journal)if(!entry||typeof entry.id!=='string'||!Array.isArray(entry.deltas)||entry.deltas.some(delta=>!delta||!['courses','lessons','tasks','notes'].includes(delta.collection)||typeof delta.id!=='string'||delta.before!==null&&typeof delta.before!=='object'||delta.after!==null&&typeof delta.after!=='object'))throw Error('变更档案无效，未覆盖数据。');
+    if(value.privateTerms!==undefined&&(!Array.isArray(value.privateTerms)||value.privateTerms.length>500||value.privateTerms.some(term=>typeof term!=='string'||!term||term.length>80)))throw Error('隐藏词表无效');
+    if(value.temporalResolutions!==undefined&&(!Array.isArray(value.temporalResolutions)||value.temporalResolutions.some(item=>!item||typeof item.subject!=='string'||typeof item.scope!=='string'||typeof item.value!=='string'||!Array.isArray(item.fingerprints)||item.fingerprints.some(value=>typeof value!=='string'))))throw Error('通知核对依据无效');
+    const history=value.checkpoints;
+    if(history!==undefined){
+      if(!history||history.version!==1||!Array.isArray(history.items))throw Error('历史快照索引无效');
+      const historyIds=new Set();
+      for(const item of history.items){
+        if(!item||typeof item.id!=='string'||!item.id||historyIds.has(item.id)||typeof item.label!=='string'||item.label.length>80||!/^\d{4}-\d{2}-\d{2}$/.test(item.day)||!Number.isFinite(Date.parse(item.at))||!/^[a-f0-9]{64}$/.test(item.hash)||!Number.isSafeInteger(item.bytes)||item.bytes<1||!Array.isArray(item.assets)||!Array.isArray(item.counts))throw Error('历史快照条目无效');
+        historyIds.add(item.id);
+        if(item.assets.some(asset=>!asset||!/^[a-f0-9]{64}$/.test(asset.hash)||!Number.isSafeInteger(asset.bytes)||asset.bytes<1))throw Error('历史原件清单无效');
+        if(item.counts.some(value=>!value||!['courses','lessons','tasks','notes','scratchEntries','agentHistory'].includes(value.key)||!Number.isInteger(value.count)||value.count<0))throw Error('历史快照条数无效');
+      }
+    }
     const box=value.mailbox;
     if(!box||typeof box.enabled!=='boolean'||!['gentle','plain','direct'].includes(box.tone)||!box.enrolled||!Array.isArray(box.letters)||box.letters.length>10000||!Array.isArray(box.truths)||box.truths.length>10000)throw Error('时间信箱记录无效。');
     for(const letter of box.letters)if(!letter||typeof letter.id!=='string'||typeof letter.taskId!=='string'||typeof letter.body!=='string'||letter.body.length>12000||!Array.isArray(letter.facts))throw Error('时间信件数据无效。');
@@ -3225,6 +3271,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   function assistantTool(name,args,context={}){
     const definition=assistantTools.get(name);if(!definition)throw Error('不支持的工具');
     assistantValidate(definition.inputSchema,args);
+    if(name==='search_web')return {readOnly:true,type:'search_web',query:args.query,limit:args.limit||5};
     if(name==='search_notes')return {readOnly:true,refs:semanticAgentSearch(args.query).filter(ref=>!args.date_from||String(ref.date||'')>=args.date_from).filter(ref=>!args.date_to||String(ref.date||'')<=args.date_to).slice(0,args.limit||5)};
     if(name==='get_schedule')return {readOnly:true,...assistantSchedule(args)};
     if(name==='update_event'){
@@ -3395,7 +3442,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   canNavigateBack=function(){return Boolean(assistantSheet)||navigateBeforeAssistant()};
   const backBeforeAssistant=window.XixuHandleSystemBack;
   window.XixuHandleSystemBack=()=>{if(assistantSheet){assistantCloseSheet();return true}return backBeforeAssistant?.()};
-  renderSettings=function(){return settingsBeforeAssistantCore()+'<div class="tide-section"><h2>助手记录</h2></div><div class="xixu-setting-actions"><button data-action="assistant-journal">'+icon('git-compare-arrows')+'<span>日程变更记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-traces">'+icon('activity')+'<span>处理记录</span>'+icon('chevron-right')+'</button></div>'};
+  renderSettings=function(){return settingsBeforeAssistantCore()+'<div class="tide-section"><h2>助手记录</h2></div><div class="xixu-setting-actions"><button data-action="assistant-journal">'+icon('git-compare-arrows')+'<span>日程变更记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-traces">'+icon('activity')+'<span>处理记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-private-terms">'+icon('shield-check')+'<span>发送前隐藏词表</span>'+icon('chevron-right')+'</button></div>'};
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-action]');if(!button)return;const action=button.dataset.action;
     try{
@@ -3495,10 +3542,46 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     const groups=new Map();for(const claim of claims){const key=assistantTopic(claim.subject)+'|'+claim.field;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(claim)}
     return [...groups.values()].filter(group=>new Set(group.flatMap(item=>item.dates)).size>1).map(group=>({subject:group[0].subject,claims:group.slice().sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)),status:group.length===1&&group[0].changed&&group[0].dates.length>1?'explicit_revision_in_source':'needs_scope_confirmation'}));
   }
+  let temporalReviewGroups=null;
+  function temporalFingerprint(claim){return assistantStable({source:claim.ref.documentId||claim.ref.id,version:claim.ref.baseVersionHash||claim.ref.id,at:claim.at,field:claim.field,evidence:claim.evidence})}
+  function temporalResolution(group){
+    const fingerprints=group.claims.map(temporalFingerprint).sort();
+    return (assistantState().temporalResolutions||[]).slice().reverse().find(item=>item.subject===group.subject&&item.field===group.claims[0].field&&assistantStable(item.fingerprints)===assistantStable(fingerprints));
+  }
   function assistantTemporalAnswer(query,refs){
     if(!/后来|改了|改期|延期|最新|什么时候|冲突|以.*为准/.test(query))return null;
     const groups=assistantTemporalClaims(refs);if(!groups.length)return null;
-    return {answer:groups.map(group=>'“'+group.subject+'”有不同通知内容：\n'+group.claims.map(claim=>'• '+(claim.at||'原始时间未知')+'：'+claim.evidence).join('\n')+(group.status==='explicit_revision_in_source'?'\n这条通知明确写了从“'+group.claims[0].dates[0]+'”改为“'+group.claims[0].dates.at(-1)+'”；出处已保留，尚未替你改日程。':'\n已保留新旧来源；仅凭片段无法确认是否同一批次、同一次考试或同一份作业，请展开原文核对，尚未替你改日程。')).join('\n\n'),refs,action:{type:'none'},source:'local',tool:'temporal_sources'};
+    const unresolved=groups.some(group=>!temporalResolution(group));
+    return {answer:groups.map(group=>{
+      const decision=temporalResolution(group),sources=group.claims.map(claim=>'• '+(claim.at||'原始时间未知')+'：'+claim.evidence).join('\n');
+      if(decision)return '“'+group.subject+'”当前按你核对的“'+decision.scope+'”处理：'+decision.value+'。\n核对时间：'+decision.at+'；保留的新旧出处：\n'+sources+'\n来源内容若变化，会重新请求核对。尚未替你改日程。';
+      return '“'+group.subject+'”有不同通知内容：\n'+sources+(group.status==='explicit_revision_in_source'?'\n本条明确写了从“'+group.claims[0].dates[0]+'”改为“'+group.claims[0].dates.at(-1)+'”。':'\n请核对是否同一次事项、班级或批次，并选择哪条为准。')+'尚未替你修改日程。';
+    }).join('\n\n'),refs,action:unresolved?{type:'review_temporal',groups}:{type:'none'},source:'local',tool:'temporal_sources'};
+  }
+  function assistantReviewTemporal(){
+    const groups=agentDraft?.action?.type==='review_temporal'?agentDraft.action.groups:null;if(!groups?.length)throw Error('请先向助手询问“这件事后来改了吗”，再核对这次的通知来源');temporalReviewGroups=groups;
+    assistantShowSheet('核对通知变化','<p>为每组通知说明适用的同一事项、班级或批次，再选择当前采用的值。所有旧通知保留，资料或版本变化后会重新核对。</p><form id="xixu-temporal-review" class="tide-form">'+groups.map((group,index)=>'<fieldset><legend>'+esc(group.subject)+'</legend><label class="tide-field">适用事项／批次<input name="scope-'+index+'" maxlength="80" required placeholder="例如：本学期软件工程一班期末"></label><label class="tide-field">当前以哪条为准<select name="choice-'+index+'">'+group.claims.flatMap((claim,claimIndex)=>claim.dates.map((value,valueIndex)=>'<option value="'+esc(JSON.stringify([claimIndex,valueIndex]))+'">'+esc(value+' · '+(claim.at||'原始时间未知')+' · '+claim.ref.title)+'</option>')).join('')+'</select></label>'+group.claims.map(claim=>'<blockquote>'+esc(claim.evidence)+'</blockquote>').join('')+'</fieldset>').join('')+'<label class="xixu-check-line"><input type="checkbox" name="verified" required>我已核对这些来源和适用批次，同意保存所选依据</label><button class="tide-primary">保存核对依据</button></form>','temporal-review');
+  }
+  async function temporalVerifySource(claim){
+    const ref=claim.ref;
+    if(ref.recordType==='external'){
+      if(!knowledgeEnabled())throw Error('请先连接原电脑以核对通知版本');const [document_id,version,start,end]=String(ref.id).split(':');await knowledgeCall('excerpt',{document_id,version,start:Number(start),end:Number(end)});return;
+    }
+    const record=ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):ref.recordType==='scratch'?scratchEntries.find(item=>item.id===ref.id):null;
+    if(!record||!ref.baseVersion||assistantStable(record)!==ref.baseVersion)throw Error('通知原文已变化，请重新查询后核对');
+  }
+  async function temporalSaveReview(form){
+    const groups=temporalReviewGroups,token=assistantSheet?.token;if(!groups?.length)throw Error('本次核对已失效');const data=new FormData(form);if(!data.has('verified'))throw Error('请先核对适用批次');
+    const decisions=[];for(let index=0;index<groups.length;index++){
+      const group=groups[index],scope=String(data.get('scope-'+index)||'').trim(),choice=JSON.parse(String(data.get('choice-'+index)||'null'));
+      if(!scope||scope.length>80||!Array.isArray(choice)||choice.length!==2)throw Error('请完整核对通知和适用批次');
+      const claim=group.claims[choice[0]],value=claim?.dates[choice[1]];if(typeof value!=='string')throw Error('所选通知已经失效');
+      for(const source of group.claims)await temporalVerifySource(source);
+      decisions.push({id:uid(),subject:group.subject,field:claim.field,scope,value,at:new Date().toISOString(),fingerprints:group.claims.map(temporalFingerprint).sort(),chosen:temporalFingerprint(claim),evidence:claim.evidence,sourceAt:claim.at,sourceTitle:claim.ref.title});
+    }
+    if(temporalReviewGroups!==groups||assistantSheet?.kind!=='temporal-review'||assistantSheet?.token!==token)throw Error('已取消核对，本次没有保存');
+    const state=assistantState(),previous=state.temporalResolutions||[];state.temporalResolutions=[...previous,...decisions];if(persist()===false){state.temporalResolutions=previous;throw Error('核对依据未保存')}
+    temporalReviewGroups=null;assistantCloseSheet();notify('通知依据已保存；再次提问可按所核对批次追溯新旧变化');
   }
   const semanticSearchBeforeAssistant=semanticAgentSearch;
   Object.assign(agentRagSynonyms,{开题:'开题报告 提交',汇报:'presentation 展示',改期:'延期 调整 改为'});
@@ -3518,7 +3601,9 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
       if(assistantSavedDone)for(const task of tasks){if(assistantSavedDone.has(task.id)&&assistantSavedDone.get(task.id)!==Boolean(task.done)){const entries=state.taskProgress[task.id]||(state.taskProgress[task.id]=[]);entries.push({at:new Date().toISOString(),kind:task.done?'marked_done':'reopened'});if(entries.length>1000)entries.splice(0,entries.length-1000)}}
       const sources=assistantSourceRecords(),current=new Map(sources.map(item=>[item.id,{at:item.at,text:item.text}])),changed=assistantSavedSources?sources.filter(item=>{const old=assistantSavedSources.get(item.id);return !old||old.at!==item.at||old.text!==item.text}):[];
       persistBeforeIntelligence();
-      if(lastSaved===JSON.stringify(snapshot())){assistantSavedDone=done;assistantSavedSources=current;if(changed.length)setTimeout(()=>assistantMineRecords(changed),0)}
+      const saved=lastSaved===JSON.stringify(snapshot());
+      if(saved){assistantSavedDone=done;assistantSavedSources=current;if(changed.length)setTimeout(()=>assistantMineRecords(changed),0)}
+      return saved;
     }finally{assistantPersistBusy=false}
   };
   function assistantMailboxDue(task){return validCalendarDate(task.date)?Date.parse(task.date+'T'+(assistantClock(task.time)?task.time:'23:59')+':00+08:00'):NaN}
@@ -3567,7 +3652,8 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-action]');if(!button)return;
     const action=button.dataset.action;
-    if(action==='assistant-suggestions')assistantShowCommitments();
+    if(action==='assistant-temporal-review')try{assistantReviewTemporal()}catch(error){notify(error.message)}
+    else if(action==='assistant-suggestions')assistantShowCommitments();
     else if(action==='assistant-mine'){if(!assistantMiningBusy)assistantMineRecords(assistantSourceRecords())}
     else if(action==='assistant-suggestion-dismiss'){const item=assistantState().commitments.find(value=>value.id===button.dataset.id);if(item){item.status='dismissed';persist();assistantShowCommitments()}}
     else if(action==='assistant-suggestion-review')assistantReviewSuggestion(button.dataset.id).catch(error=>notify(error.message));
@@ -3577,7 +3663,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   },true);
   root.addEventListener('change',event=>{const id=event.target.dataset?.mailboxTask;if(!id)return;const box=assistantState().mailbox,previous=box.enrolled[id];box.enrolled[id]={at:previous?.at||new Date().toISOString(),muted:!event.target.checked};persist()});
   root.addEventListener('submit',async event=>{
-    const form=event.target;if(!['xixu-suggestion-form','xixu-mailbox-settings','xixu-letter-reply','xixu-letter-review'].includes(form.id))return;event.preventDefault();event.stopImmediatePropagation();const data=new FormData(form),box=assistantState().mailbox;
+    const form=event.target;if(form.id==='xixu-temporal-review'){event.preventDefault();event.stopImmediatePropagation();const button=form.querySelector('button');button.disabled=true;temporalSaveReview(form).catch(error=>{notify(error.message);if(button.isConnected)button.disabled=false});return}if(!['xixu-suggestion-form','xixu-mailbox-settings','xixu-letter-reply','xixu-letter-review'].includes(form.id))return;event.preventDefault();event.stopImmediatePropagation();const data=new FormData(form),box=assistantState().mailbox;
     try{
       if(form.id==='xixu-suggestion-form'){
         const candidate=assistantState().commitments.find(item=>item.id===form.dataset.id);await assistantVerifyCommitment(candidate);
@@ -3594,7 +3680,16 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
 
   const assistantModelPending=new Map();let assistantPrivacy=null,assistantStreamFrame=0;
   function assistantModelConfig(){try{return JSON.parse(window.XixuModels?.publicConfig?.()||'{}')}catch(_){return {}}}
-  function assistantMask(value){return String(value||'').replace(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/g,'[电话已隐藏]').replace(/(学号|工号|身份证|student\s*id)\s*[:：]?\s*[A-Za-z0-9-]{5,24}/gi,'$1：[编号已隐藏]').replace(/[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[邮箱已隐藏]')}
+  function assistantMask(value){
+    let text=String(value||'');for(const term of [...(assistantState().privateTerms||[])].sort((a,b)=>b.length-a.length))text=text.split(term).join('[已隐藏]');
+    return text.replace(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/g,'[电话已隐藏]')
+      .replace(/(学号|工号|身份证|student\s*id)\s*[:：]?\s*[A-Za-z0-9-]{5,24}/gi,'$1：[编号已隐藏]')
+      .replace(/[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[邮箱已隐藏]')
+      .replace(/(?<!\d)(?:\d{17}[\dXx]|\d{15}|\d{16,19})(?!\w)/g,'[证件或卡号已隐藏]')
+      .replace(/((?:姓名|联系人|收件人|发件人)\s*[:：]\s*)[\u3400-\u9fff]{2,6}(?=[\s，。；、;]|$)/g,'$1[姓名已隐藏]')
+      .replace(/((?:api[_ -]?key|token|密钥|密码)\s*[:：=]\s*)[^\s,，;；]{4,}/gi,'$1[密钥已隐藏]');
+  }
+  function assistantPrivacySettings(){assistantShowSheet('本机隐藏词表','<p>填写自己的姓名、联系人或其他不希望发送的词。手机与电脑词表分别保存在各自设备，发送核对时自动应用。</p><form id="xixu-private-terms-form" class="tide-form"><label class="tide-field">每行一个词<textarea name="terms" rows="6" maxlength="40000">'+esc((assistantState().privateTerms||[]).join('\n'))+'</textarea></label><button class="tide-primary">保存隐藏词表</button></form>','private-terms')}
   function assistantApprove({destination,model='',query,refs=[],history=[],request=null}){
     if(assistantPrivacy)return Promise.reject(Error('还有一项发送核对未完成'));
     if(request&&request!==agentRequest)return Promise.resolve(null);
@@ -3719,6 +3814,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     const prepared=await knowledgeCall('chat-prepare',{query:approved.query,local_context:approved.refs.map(ref=>ref.text),conversation_id:'xixu-'+request.conversationId,limit:5},request);
     if(request!==agentRequest)return null;
     const remote=knowledgeReferences(prepared.source_refs||[]).map((ref,index)=>({...ref,cloudIndex:index+1,title:prepared.sources?.[index]?.title||assistantMask(ref.title),text:prepared.sources?.[index]?.text||assistantMask(ref.text)}));
+    const temporal=assistantTemporalAnswer(approved.query,remote);if(temporal)return {...temporal,source:'computer'};
     if(assistantLocalEnough(approved.query,remote))return {answer:localAgentAnswer(approved.query,remote),refs:remote,action:{type:'none'},source:'computer',tool:'search_notes'};
     if(!prepared.model_configured)return {answer:remote.length?'电脑找到了相关片段，可以展开来源核对；电脑模型尚未配置。':'电脑也没有找到充分资料。',refs:[...remote,...approved.refs],query:approved.query,requiresPhoneModel:true,action:{type:'none'},source:'computer'};
     const temporary=(prepared.local_context||[]).map((text,index)=>({id:'temporary:'+index,title:'本次手机片段',text,temporary:true}));
@@ -3732,25 +3828,37 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     const value=JSON.parse(String(text).replace(/^```(?:json)?\s*|\s*```$/g,''));
     if(typeof value.answer!=='string'||!value.answer.trim()||value.answer.length>16000)throw Error('回答正文为空或超出容量，未截断执行');
     for(const ref of refs)if(ref.baseVersion){const target=ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):null;if(target&&assistantStable(target)!==ref.baseVersion&&value.tool_call?.name==='update_event')throw Error('检索后事项已改变，请重新查找后修改')}
-    if(value.tool_call){const tool=String(value.tool_call.name||''),prepared=assistantTool(tool,value.tool_call.arguments,{refs});if(prepared.readOnly){const answer=tool==='search_notes'?localAgentAnswer(value.tool_call.arguments.query,prepared.refs):prepared.date+' 的占用记录：\n'+prepared.occupied.map(item=>item.label+' · '+assistantFormatMinute(item.start)+'—'+assistantFormatMinute(item.end)).join('\n')+(prepared.deadlines.length?'\n截止事项：'+prepared.deadlines.map(item=>item.title).join('、'):'');return {answer,refs:prepared.refs||refs,action:{type:'none'},source:'local',tool}}return {answer:String(value.answer||'已整理，请核对后确认。'),refs,action:prepared,source:'model',tool}}
+    if(value.tool_call){const tool=String(value.tool_call.name||''),prepared=assistantTool(tool,value.tool_call.arguments,{refs});if(prepared.type==='search_web')return {answer:'可以进一步查公开网页，请先核对搜索词。尚未发起联网搜索。',refs,action:prepared,source:'model',tool};if(prepared.readOnly){const answer=tool==='search_notes'?localAgentAnswer(value.tool_call.arguments.query,prepared.refs):prepared.date+' 的占用记录：\n'+prepared.occupied.map(item=>item.label+' · '+assistantFormatMinute(item.start)+'—'+assistantFormatMinute(item.end)).join('\n')+(prepared.deadlines.length?'\n截止事项：'+prepared.deadlines.map(item=>item.title).join('、'):'');return {answer,refs:prepared.refs||refs,action:{type:'none'},source:'local',tool}}return {answer:String(value.answer||'已整理，请核对后确认。'),refs,action:prepared,source:'model',tool}}
     const result=normalizeAgentResult(value,refs);result.answer=value.answer;
     const id=result.action.taskId||result.action.noteId||result.action.courseId,ref=refs.find(item=>item.id===id);if(ref?.baseVersion)result.action.baseVersion=ref.baseVersion;
     return result;
   }
+  async function assistantSearchPublicWeb(query,request){
+    request.route='public-web-search';request.intent='search_web';
+    if(!knowledgeEnabled())return {answer:'联网搜索已独立接入。请在设置中启用电脑扩展并配对，在电脑管理页配置 Brave Search 密钥后再试；本次没有发送笔记或发起搜索。',refs:[],action:{type:'none'},source:'local'};
+    const health=await knowledgeCall('health',{},request);if(request!==agentRequest)return null;
+    const config=health.web_search;if(!config?.enabled||!config.key_configured)return {answer:'请先在电脑管理页的“联网搜索工具”启用 Brave Search 并保存搜索服务 Key。模型 Key 与搜索 Key 分开，本次尚未发起联网搜索。',refs:[],action:{type:'none'},source:'local'};
+    const approved=await assistantApprove({destination:knowledgeStatus().server+' → '+config.destination,query,request});if(request!==agentRequest)return null;
+    if(!approved)return {answer:'已取消联网搜索，内容留在本机。',refs:[],action:{type:'none'},source:'local',cancelled:true};
+    const result=await knowledgeCall('web-search',{query:approved.query,limit:5,approved:true},request);if(request!==agentRequest)return null;
+    const refs=[];for(const item of result.results){const key='web:'+await archiveSha(new TextEncoder().encode(item.url));refs.push({id:key,documentId:key,chunkId:key,title:item.title,text:item.text,url:item.url,recordType:'web',kind:'网页',action:'agent-web-source'})}
+    return {answer:refs.length?'实际搜索词：'+result.query+'\n找到以下公开网页摘要：\n'+refs.map((ref,index)=>'['+(index+1)+'] '+ref.title+'\n'+ref.text).join('\n\n')+'\n\n可展开来源访问原网页；搜索摘要不代表已阅读全文。':'本次没有找到可用的公开网页结果。',refs,action:{type:'none'},source:'web',tool:'search_web'};
+  }
   async function assistantSubmitAgent(form){
     if(agentPending){notify('上一条仍在处理中，可以停止后再发送');return}
     const original=String(new FormData(form).get('question')||''),query=original.trim();if(!query)return;if(query.length>AGENT_MESSAGE_MAX_CHARS){notify('内容已留在草稿中，请拆分发送或保存为笔记');return}
-    const conversationId=activeConversationId(),now=new Date().toISOString();let userId=uid(),local=null;
-    try{const scheduleQuery=contextualRescheduleQuery(query,conversationId);local=scheduleQuery?localRescheduleAction(query,[],conversationId):localAgentCommand(query)}catch(error){local={answer:'本机参数还不能完成核对：'+String(error.message||'请补充说明'),refs:[],action:{type:'none'},source:'local',error:true}}
+    const conversationId=activeConversationId(),now=new Date().toISOString(),wantsWeb=assistantRouteIntent(query)==='search_web';let userId=uid(),local=null;
+    try{const scheduleQuery=wantsWeb?'':contextualRescheduleQuery(query,conversationId);local=wantsWeb?null:scheduleQuery?localRescheduleAction(query,[],conversationId):localAgentCommand(query)}catch(error){local={answer:'本机参数还不能完成核对：'+String(error.message||'请补充说明'),refs:[],action:{type:'none'},source:'local',error:true}}
     if(agentEditingId){const index=agentHistory.findIndex(item=>item.id===agentEditingId&&String(item.conversationId||'default')===conversationId);if(index>=0){userId=agentEditingId;agentHistory[index].text=query;if(agentHistory[index+1]?.role==='assistant')agentHistory.splice(index+1,1)}agentEditingId=''}
     if(!agentHistory.some(item=>item.id===userId))agentHistory.push({id:userId,conversationId,role:'user',text:query,source:'local',createdAt:now});
     agentInputDraft='';saveAgentInput();agentConversationMetadata()[conversationId]={...agentPreferences.conversations[conversationId],createdAt:agentPreferences.conversations[conversationId]?.createdAt||now,updatedAt:now};
     const request={conversationId,userId,query,refs:[],stage:'local',started:performance.now(),route:'rule',day:DEMO_DAY};agentRequest=request;agentPending=true;agentDraft={answer:'',refs:[],action:{type:'none'},source:'local'};agentConversationResults.set(conversationId,agentDraft);persist();render(false);
     const finish=result=>{if(request===agentRequest)finishAgent(query,result,request)};
     try{
+      if(wantsWeb){const result=await assistantSearchPublicWeb(query,request);if(result)finish(result);return}
       if(local){finish(local);return}
       await prepareAgentRagIndex();if(request!==agentRequest)return;
-      const retrievalQuery=contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId);let refs=semanticAgentSearch(retrievalQuery),effectiveQuery=query;for(const ref of refs){const record=ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):null;if(record)ref.baseVersion=assistantStable(record)}request.refs=refs;request.route='phone-retrieval';request.intent=assistantRouteIntent(query,Boolean(assistantState().pendingSlots[conversationId]));
+      const retrievalQuery=contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId);let refs=semanticAgentSearch(retrievalQuery),effectiveQuery=query;for(const ref of refs){const record=ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):ref.recordType==='scratch'?scratchEntries.find(item=>item.id===ref.id):null;if(record){ref.baseVersion=assistantStable(record);if(/后来|改了|改期|延期|最新|什么时候|冲突|以.*为准/.test(query))ref.baseVersionHash=await archiveSha(new TextEncoder().encode(ref.baseVersion))}}if(request!==agentRequest)return;request.refs=refs;request.route='phone-retrieval';request.intent=assistantRouteIntent(query,Boolean(assistantState().pendingSlots[conversationId]));
       const temporal=assistantTemporalAnswer(query,refs);if(temporal){finish(temporal);return}
       if(!agentMutationIntent(query)&&assistantLocalEnough(query,refs)){finish(localAgentResult(query,refs,conversationId));return}
       if(!agentMutationIntent(query)&&knowledgeEnabled()){
@@ -3775,7 +3883,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     request.cancelled=true;finishAgent(request.query,{answer:'已停止本次处理。问题保留在对话里，没有执行日程修改。',refs:request.refs||[],action:{type:'none'},source:'local',cancelled:true},request);
   }
   function assistantRequestStructuredModel(messages,receive){
-    if(!window.XixuModels||!Array.isArray(messages)||typeof receive!=='function')return false;
+    if(!window.XixuModels||!Array.isArray(messages)||typeof receive!=='function'||assistantPrivacy||assistantVisionApproval)return false;
     (async()=>{
       const profile=assistantModelConfig(),vision=messages.some(item=>Array.isArray(item.content)&&item.content.some(part=>part.type==='image_url'));
       if(vision&&!profile.capabilities?.vision)throw Error('所选模型未确认支持图片，请先在模型设置核对');
@@ -3798,74 +3906,143 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   root.addEventListener('click',event=>{const action=event.target.closest('[data-action]')?.dataset.action;if(action==='assistant-approve-send')assistantFinishPrivacy();else if(action==='assistant-stop')assistantStop();else if(action==='assistant-mask-terms'){const terms=String(root.querySelector('#assistant-private-terms')?.value||'').split(/[,，\n]/).map(term=>term.trim()).filter(Boolean);for(const field of root.querySelectorAll('.xixu-assistant-sheet textarea'))for(const term of terms)field.value=field.value.split(term).join('[已隐藏]');if(assistantPrivacy)assistantPrivacy.prepared.refs.forEach((ref,index)=>{for(const term of terms)ref.title=ref.title.split(term).join('[已隐藏]');const title=root.querySelector('[data-approval-source-title="'+index+'"]');if(title)title.textContent=ref.title})}
     else if(action==='assistant-vision-approved'){const resolve=assistantVisionApproval;assistantVisionApproval=null;assistantCloseSheet();resolve?.(true)}
   },true);
+  root.addEventListener('click',event=>{
+    const button=event.target.closest('[data-action]'),action=button?.dataset.action;
+    if(action==='assistant-start-web'){
+      const form=document.createElement('form'),input=document.createElement('textarea');input.name='question';input.value='联网搜索：'+String(button.dataset.query||'');form.append(input);assistantSubmitAgent(form);
+    }else if(action==='agent-web-source'){
+      try{const url=new URL(button.dataset.url);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('链接不可用');if(window.XixuBrowser)window.XixuBrowser.open(url.href);else window.open(url.href,'_blank','noopener,noreferrer')}catch(_){notify('原网页链接无效')}
+    }
+  });
+  root.addEventListener('click',event=>{if(event.target.closest('[data-action]')?.dataset.action==='assistant-private-terms')assistantPrivacySettings()});
+  root.addEventListener('submit',event=>{if(event.target.id!=='xixu-private-terms-form')return;event.preventDefault();const terms=[...new Set(String(new FormData(event.target).get('terms')||'').split(/\r?\n/).map(term=>term.trim()).filter(Boolean))];if(terms.length>500||terms.some(term=>term.length>80)){notify('最多保存 500 个隐藏词，每个词最多 80 字符');return}const state=assistantState(),previous=state.privateTerms;state.privateTerms=terms;if(persist()===false){state.privateTerms=previous;notify('隐藏词表未保存，请检查可用存储');return}assistantCloseSheet();notify('隐藏词表已保存')});
   window.addEventListener('pagehide',()=>{assistantCancelPrivacy();assistantCancelVision();for(const id of [...assistantModelPending.keys()])assistantResolveModel(id,Error('页面已关闭'))});
 
-  const COMPLETE_BACKUP_MAX=2*1024*1024*1024-1,COMPLETE_WEB_MAX=64*1024*1024;
+  // Stored ZIP entries allow random-access verification without inflating the
+  // entire backup. ZIP64 carries offsets/sizes beyond the old 2 GiB boundary.
+  const BACKUP_ZIP32=0xffffffff;
+  function backupPut64(view,offset,value){if(!Number.isSafeInteger(value)||value<0)throw Error('备份偏移超出可精确表示的范围');view.setUint32(offset,value>>>0,true);view.setUint32(offset+4,Math.floor(value/0x100000000),true)}
+  function backupGet64(view,offset){const value=view.getUint32(offset,true)+view.getUint32(offset+4,true)*0x100000000;if(!Number.isSafeInteger(value))throw Error('备份偏移无法精确读取');return value}
+  class BackupZipWriter {
+    constructor(write){this.output=write;this.position=0;this.entries=[]}
+    async write(bytes){if(!Number.isSafeInteger(this.position+bytes.length))throw Error('备份过大');await this.output(bytes);this.position+=bytes.length}
+    async entry(name,size,crc,produce){
+      if(!Number.isSafeInteger(size)||size<0)throw Error('备份条目大小无效');
+      const encoded=new TextEncoder().encode(name),large=size>=BACKUP_ZIP32,extra=large?20:0,header=new Uint8Array(30+encoded.length+extra),view=new DataView(header.buffer),offset=this.position;
+      view.setUint32(0,0x04034b50,true);view.setUint16(4,large?45:20,true);view.setUint16(6,0x800,true);view.setUint16(12,0x21,true);view.setUint32(14,crc,true);view.setUint32(18,large?BACKUP_ZIP32:size,true);view.setUint32(22,large?BACKUP_ZIP32:size,true);view.setUint16(26,encoded.length,true);view.setUint16(28,extra,true);header.set(encoded,30);
+      if(large){const start=30+encoded.length;view.setUint16(start,1,true);view.setUint16(start+2,16,true);backupPut64(view,start+4,size);backupPut64(view,start+12,size)}
+      await this.write(header);const start=this.position;await produce(bytes=>this.write(bytes));if(this.position-start!==size)throw Error('备份条目没有完整写入');
+      this.entries.push({name:encoded,size,crc,offset,large});
+    }
+    async close(){
+      const directoryOffset=this.position;
+      for(const item of this.entries){
+        const offset64=item.offset>=BACKUP_ZIP32,extraBytes=(item.large?16:0)+(offset64?8:0),header=new Uint8Array(46+item.name.length+(extraBytes?extraBytes+4:0)),view=new DataView(header.buffer),version=extraBytes?45:20;
+        view.setUint32(0,0x02014b50,true);view.setUint16(4,version,true);view.setUint16(6,version,true);view.setUint16(8,0x800,true);view.setUint16(14,0x21,true);view.setUint32(16,item.crc,true);view.setUint32(20,item.large?BACKUP_ZIP32:item.size,true);view.setUint32(24,item.large?BACKUP_ZIP32:item.size,true);view.setUint16(28,item.name.length,true);view.setUint16(30,extraBytes?extraBytes+4:0,true);view.setUint32(42,offset64?BACKUP_ZIP32:item.offset,true);header.set(item.name,46);
+        if(extraBytes){let at=46+item.name.length;view.setUint16(at,1,true);view.setUint16(at+2,extraBytes,true);at+=4;if(item.large){backupPut64(view,at,item.size);backupPut64(view,at+8,item.size);at+=16}if(offset64)backupPut64(view,at,item.offset)}
+        await this.write(header);
+      }
+      const directoryBytes=this.position-directoryOffset,zip64=this.entries.length>=65535||directoryOffset>=BACKUP_ZIP32||directoryBytes>=BACKUP_ZIP32||this.entries.some(item=>item.large);
+      if(zip64){
+        const recordOffset=this.position,record=new Uint8Array(56),view=new DataView(record.buffer);view.setUint32(0,0x06064b50,true);backupPut64(view,4,44);view.setUint16(12,45,true);view.setUint16(14,45,true);backupPut64(view,24,this.entries.length);backupPut64(view,32,this.entries.length);backupPut64(view,40,directoryBytes);backupPut64(view,48,directoryOffset);await this.write(record);
+        const locator=new Uint8Array(20),loc=new DataView(locator.buffer);loc.setUint32(0,0x07064b50,true);backupPut64(loc,8,recordOffset);loc.setUint32(16,1,true);await this.write(locator);
+      }
+      const end=new Uint8Array(22),view=new DataView(end.buffer);view.setUint32(0,0x06054b50,true);view.setUint16(8,Math.min(this.entries.length,65535),true);view.setUint16(10,Math.min(this.entries.length,65535),true);view.setUint32(12,Math.min(directoryBytes,BACKUP_ZIP32),true);view.setUint32(16,Math.min(directoryOffset,BACKUP_ZIP32),true);await this.write(end);return this.position;
+    }
+  }
+  async function backupZipDirectory(reader,size){
+    if(!Number.isSafeInteger(size)||size<22)throw Error('备份大小无效');
+    const read=async(offset,length)=>{if(!Number.isSafeInteger(offset)||!Number.isSafeInteger(length)||offset<0||length<0||!Number.isSafeInteger(offset+length)||offset+length>size)throw Error('备份读取范围无效');const bytes=await reader(offset,length);if(!(bytes instanceof Uint8Array)||bytes.length!==length)throw Error('备份文件不完整');return bytes};
+    const tailSize=Math.min(65557,size),tail=await read(size-tailSize,tailSize),endView=new DataView(tail.buffer,tail.byteOffset,tail.length);let end=-1;
+    for(let at=tail.length-22;at>=0;at--)if(endView.getUint32(at,true)===0x06054b50&&at+22+endView.getUint16(at+20,true)===tail.length){end=at;break}
+    if(end<0||endView.getUint16(end+4,true)||endView.getUint16(end+6,true)||endView.getUint16(end+8,true)!==endView.getUint16(end+10,true))throw Error('不是受支持的完整备份');
+    let count=endView.getUint16(end+10,true),directoryBytes=endView.getUint32(end+12,true),directoryOffset=endView.getUint32(end+16,true),directoryEnd=size-tailSize+end;
+    if(directoryEnd>=20){
+      const locator=await read(directoryEnd-20,20),loc=new DataView(locator.buffer,locator.byteOffset,20);
+      if(loc.getUint32(0,true)===0x07064b50){
+        const offset=backupGet64(loc,8),record=await read(offset,56),view=new DataView(record.buffer,record.byteOffset,56);
+        if(loc.getUint32(4,true)||loc.getUint32(16,true)!==1||view.getUint32(0,true)!==0x06064b50||backupGet64(view,4)<44||offset+12+backupGet64(view,4)!==directoryEnd-20||view.getUint32(16,true)||view.getUint32(20,true)||backupGet64(view,24)!==backupGet64(view,32))throw Error('ZIP64 备份目录无效');
+        count=backupGet64(view,32);directoryBytes=backupGet64(view,40);directoryOffset=backupGet64(view,48);directoryEnd=offset;
+      }else if(count===65535||directoryBytes===BACKUP_ZIP32||directoryOffset===BACKUP_ZIP32)throw Error('缺少 ZIP64 目录');
+    }
+    if(count<2||count>Math.floor(directoryBytes/46)||directoryOffset+directoryBytes!==directoryEnd)throw Error('备份目录范围无效');
+    const entries=new Map(),ranges=[],decoder=new TextDecoder('utf-8',{fatal:true});let cursor=directoryOffset;
+    for(let index=0;index<count;index++){
+      const header=await read(cursor,46),view=new DataView(header.buffer,header.byteOffset,46);
+      if(view.getUint32(0,true)!==0x02014b50||view.getUint16(8,true)&~0x800||view.getUint16(10,true)||view.getUint16(34,true))throw Error('备份条目不是未加密原件');
+      const nameLength=view.getUint16(28,true),extraLength=view.getUint16(30,true),commentLength=view.getUint16(32,true),details=await read(cursor+46,nameLength+extraLength+commentLength),name=decoder.decode(details.subarray(0,nameLength));
+      if(!/^(?:manifest\.json|planner\.json|assets\/[a-f0-9]{64})$/.test(name)||entries.has(name)||cursor+46+details.length>directoryEnd)throw Error('备份含未知或重复的条目');
+      let packed=view.getUint32(20,true),bytes=view.getUint32(24,true),offset=view.getUint32(42,true),zip64=null;
+      for(let at=nameLength;at<nameLength+extraLength;){if(at+4>nameLength+extraLength)throw Error('备份扩展字段损坏');const info=new DataView(details.buffer,details.byteOffset+at,details.length-at),length=info.getUint16(2,true);if(at+4+length>nameLength+extraLength)throw Error('备份扩展字段越界');if(info.getUint16(0,true)===1){if(zip64)throw Error('重复 ZIP64 字段');zip64=new DataView(details.buffer,details.byteOffset+at+4,length)}at+=4+length}
+      let extraAt=0;const next64=()=>{if(!zip64||extraAt+8>zip64.byteLength)throw Error('ZIP64 字段不完整');const value=backupGet64(zip64,extraAt);extraAt+=8;return value};
+      if(bytes===BACKUP_ZIP32)bytes=next64();if(packed===BACKUP_ZIP32)packed=next64();if(offset===BACKUP_ZIP32)offset=next64();
+      if(packed!==bytes||offset>=directoryOffset)throw Error('备份文件大小或偏移无效');
+      const localBytes=await read(offset,30),local=new DataView(localBytes.buffer,localBytes.byteOffset,30),localName=local.getUint16(26,true),localExtra=local.getUint16(28,true),start=offset+30+localName+localExtra,localDetails=await read(offset+30,localName+localExtra);
+      if(local.getUint32(0,true)!==0x04034b50||local.getUint16(6,true)!==view.getUint16(8,true)||local.getUint16(8,true)||local.getUint32(14,true)!==view.getUint32(16,true)||decoder.decode(localDetails.subarray(0,localName))!==name||start+bytes>directoryOffset)throw Error('备份文件头与目录不一致');
+      let localPacked=local.getUint32(18,true),localSize=local.getUint32(22,true);
+      if(localPacked===BACKUP_ZIP32||localSize===BACKUP_ZIP32){let field=null;for(let at=localName;at<localDetails.length;){if(at+4>localDetails.length)throw Error('本地 ZIP64 字段损坏');const dv=new DataView(localDetails.buffer,localDetails.byteOffset+at,localDetails.length-at),length=dv.getUint16(2,true);if(at+4+length>localDetails.length)throw Error('本地 ZIP64 字段越界');if(dv.getUint16(0,true)===1){if(field)throw Error('重复本地 ZIP64 字段');field=new DataView(localDetails.buffer,localDetails.byteOffset+at+4,length)}at+=4+length}if(!field||field.byteLength<16)throw Error('缺少本地 ZIP64 大小');localSize=backupGet64(field,0);localPacked=backupGet64(field,8)}
+      if(localPacked!==bytes||localSize!==bytes)throw Error('备份条目声明不一致');
+      entries.set(name,{size:bytes,crc:view.getUint32(16,true),read:async(at,length)=>{if(at<0||length<0||at+length>bytes)throw Error('条目读取越界');return read(start+at,length)}});ranges.push({start:offset,end:start+bytes});cursor+=46+details.length;await archiveYield();
+    }
+    if(cursor!==directoryEnd)throw Error('备份目录尾部不一致');ranges.sort((a,b)=>a.start-b.start);for(let index=1;index<ranges.length;index++)if(ranges[index].start<ranges[index-1].end)throw Error('备份条目范围重叠');return entries;
+  }
+  async function backupVerifyEntry(entry,consume=null){const result=await archiveDigestSource(entry,consume);if(result.crc!==entry.crc)throw Error('备份条目 CRC 不一致');return result}
+
+  const COMPLETE_PLANNER_BYTES=40*1024*1024*3; // UTF-8 bound for the existing 40 MiB JSON character store.
   const completeBackupPending=new Map();let completeBackupBusy=false,completeBackupCandidate=null;
   window.XixuReceiveBackup=(id,ok,body)=>{const pending=completeBackupPending.get(id);if(!pending)return;completeBackupPending.delete(id);clearTimeout(pending.timer);ok?pending.resolve(body):pending.reject(Error(body||'备份未完成'))};
-  function completeNativeCall(method,...args){return new Promise((resolve,reject)=>{const id='backup_'+uid().replace(/[^A-Za-z0-9_-]/g,''),timer=setTimeout(()=>{completeBackupPending.delete(id);reject(Error('文件操作超时，原资料保留'))},600000);completeBackupPending.set(id,{resolve,reject,timer});try{if(!window.XixuBackup?.[method]?.(id,...args))throw Error('备份文件接口尚未就绪')}catch(error){clearTimeout(timer);completeBackupPending.delete(id);reject(error)}})}
+  function completeNativeCall(method,...args){return new Promise((resolve,reject)=>{const id='backup_'+uid().replace(/[^A-Za-z0-9_-]/g,''),timer=setTimeout(()=>{completeBackupPending.delete(id);reject(Error('文件操作超时，原资料保留'))},method==='save'?3600000:600000);completeBackupPending.set(id,{resolve,reject,timer});try{if(!window.XixuBackup?.[method]?.(id,...args))throw Error('备份文件接口尚未就绪')}catch(error){clearTimeout(timer);completeBackupPending.delete(id);reject(error)}})}
   function completeArchiveManifest(data){
     const assets=new Map(),records=[...data.notes];
     for(const change of data.agentPreferences?.intelligence?.journal||[])for(const delta of change.deltas||[])if(delta.collection==='notes'){if(delta.before)records.push(delta.before);if(delta.after)records.push(delta.after)}
     const add=(hash,bytes)=>{if(!/^[a-f0-9]{64}$/.test(hash)||!Number.isInteger(bytes)||bytes<1||bytes>ARCHIVE_FILE_LIMIT)throw Error('归档原件清单无效');if(assets.has(hash)&&assets.get(hash)!==bytes)throw Error('同一原件的大小记录不一致');assets.set(hash,bytes)};
     for(const note of records)if(note.archive){add(note.archive.originalHash,note.archive.fileBytes);for(const image of note.archive.images||[])add(image.hash,image.bytes)}
+    for(const point of data.agentPreferences?.intelligence?.checkpoints?.items||[]){add(point.hash,point.bytes);for(const asset of point.assets||[])add(asset.hash,asset.bytes)}
     return [...assets].map(([hash,bytes])=>({hash,bytes}));
   }
+  async function completeBackupOutput(){
+    if(window.XixuBackup){if(!window.XixuBackup.beginWrite())throw Error('无法建立本机备份文件');return {write:async bytes=>{for(let at=0;at<bytes.length;at+=131072){if(!window.XixuBackup.writeChunk(archiveBase64(bytes.subarray(at,at+131072))))throw Error('备份写入不完整');await archiveYield()}},finish:async size=>notify(await completeNativeCall('save',size)),abort:async()=>window.XixuBackup.close()}}
+    if(window.showSaveFilePicker){
+      const handle=await window.showSaveFilePicker({suggestedName:'xixu-complete-'+DEMO_DAY+'.zip',types:[{description:'汐序完整备份',accept:{'application/zip':['.zip']}}]}),writer=await handle.createWritable();
+      return {write:bytes=>writer.write(bytes),finish:async()=>{await writer.close();notify('完整备份已写入所选文件')},abort:()=>writer.abort().catch(()=>{})};
+    }
+    let directory=null,name='',writer=null,handle=null;const parts=[];
+    if(navigator.storage?.getDirectory){directory=await navigator.storage.getDirectory();name='xixu-backup-'+uid()+'.pending';handle=await directory.getFileHandle(name,{create:true});writer=await handle.createWritable()}
+    const cleanup=async()=>{if(directory&&name)await directory.removeEntry(name).catch(()=>{})};
+    return {write:async bytes=>{if(writer)await writer.write(bytes);else parts.push(bytes.slice());await archiveYield()},finish:async()=>{if(writer)await writer.close();const blob=handle?await handle.getFile():new Blob(parts,{type:'application/zip'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='xixu-complete-'+DEMO_DAY+'.zip';link.click();setTimeout(()=>{URL.revokeObjectURL(url);cleanup()},60000);notify('完整备份已交给浏览器保存，请确认下载完成')},abort:async()=>{if(writer)await writer.abort().catch(()=>{});await cleanup()}};
+  }
   async function completeBackupExport(){
-    if(completeBackupBusy){notify('文件处理中，请稍候');return}completeBackupBusy=true;const native=Boolean(window.XixuBackup),parts=[];let position=0;
+    if(completeBackupBusy){notify('文件处理中，请稍候');return}completeBackupBusy=true;let output=null,finished=false;
     try{
+      // Request a browser destination while this call still has user activation.
+      output=await completeBackupOutput();
       const data=assistantClone(snapshot()),planner=new TextEncoder().encode(JSON.stringify(data)),assets=completeArchiveManifest(data),manifest={format:'xixu-complete-backup',version:1,createdAt:new Date().toISOString(),plannerHash:await archiveSha(planner),plannerBytes:planner.length,assets,includesConnectionCredentials:false};
-      if(planner.length>40*1024*1024||assets.length>20000||assets.reduce((sum,item)=>sum+item.bytes,planner.length)>COMPLETE_BACKUP_MAX-8*1024*1024)throw Error('完整备份超过本次容量，未截断导出');
-      if(native&&!window.XixuBackup.beginWrite())throw Error('无法建立本机备份文件');
-      const write=async bytes=>{if(position+bytes.length>(native?COMPLETE_BACKUP_MAX:COMPLETE_WEB_MAX))throw Error(native?'备份超出容量':'网页预览支持 64 MiB 完整备份；更大资料请在手机 App 导出');for(let offset=0;offset<bytes.length;offset+=131072){const part=bytes.subarray(offset,offset+131072);if(native){if(!window.XixuBackup.writeChunk(archiveBase64(part)))throw Error('备份文件写入不完整')}else parts.push(part.slice());position+=part.length;await archiveYield()}};
-      const central=[];
-      const entry=async(name,bytes)=>{
-        const encoded=new TextEncoder().encode(name),crc=await documentCrc(bytes),offset=position,header=new Uint8Array(30+encoded.length),view=new DataView(header.buffer);view.setUint32(0,0x04034b50,true);view.setUint16(4,20,true);view.setUint16(6,0x800,true);view.setUint16(12,0x21,true);view.setUint32(14,crc,true);view.setUint32(18,bytes.length,true);view.setUint32(22,bytes.length,true);view.setUint16(26,encoded.length,true);header.set(encoded,30);await write(header);await write(bytes);central.push({name:encoded,crc,bytes:bytes.length,offset});
-      };
-      await entry('manifest.json',new TextEncoder().encode(JSON.stringify(manifest)));await entry('planner.json',planner);
-      for(const asset of assets){const value=await archiveRead(asset.hash);const bytes=value instanceof Uint8Array?value:new Uint8Array(value);if(bytes.length!==asset.bytes||await archiveSha(bytes)!==asset.hash)throw Error('有原件缺失或校验失败，未输出不完整备份');await entry('assets/'+asset.hash,bytes)}
-      const directoryOffset=position;
-      for(const item of central){const header=new Uint8Array(46+item.name.length),view=new DataView(header.buffer);view.setUint32(0,0x02014b50,true);view.setUint16(4,20,true);view.setUint16(6,20,true);view.setUint16(8,0x800,true);view.setUint16(14,0x21,true);view.setUint32(16,item.crc,true);view.setUint32(20,item.bytes,true);view.setUint32(24,item.bytes,true);view.setUint16(28,item.name.length,true);view.setUint32(42,item.offset,true);header.set(item.name,46);await write(header)}
-      const directoryBytes=position-directoryOffset,end=new Uint8Array(22),endView=new DataView(end.buffer);endView.setUint32(0,0x06054b50,true);endView.setUint16(8,central.length,true);endView.setUint16(10,central.length,true);endView.setUint32(12,directoryBytes,true);endView.setUint32(16,directoryOffset,true);await write(end);
-      if(native)notify(await completeNativeCall('save',position));
-      else{const blob=new Blob(parts,{type:'application/zip'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='xixu-complete-'+DEMO_DAY+'.zip';link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);notify('完整备份已交给浏览器下载，请确认文件已保存')}
-    }catch(error){notify(error.message||'完整备份未完成，原资料仍保留')}
-    finally{window.XixuBackup?.close?.();completeBackupBusy=false}
+      const zip=new BackupZipWriter(bytes=>output.write(bytes)),entryBytes=async(name,bytes)=>zip.entry(name,bytes.length,await documentCrc(bytes),write=>write(bytes));
+      await entryBytes('manifest.json',new TextEncoder().encode(JSON.stringify(manifest)));await entryBytes('planner.json',planner);
+      for(const asset of assets){const checked=await archiveWalk(asset.hash);if(checked.bytes!==asset.bytes)throw Error('原件大小与清单不符');await zip.entry('assets/'+asset.hash,checked.bytes,checked.crc,write=>archiveWalk(asset.hash,write));await archiveYield()}
+      const size=await zip.close();await output.finish(size);finished=true;
+    }catch(error){notify(error.name==='AbortError'?'已取消备份，原资料保留':error.message||'完整备份未完成，原资料仍保留')}
+    finally{if(!finished&&output)await output.abort().catch(()=>{});window.XixuBackup?.close?.();completeBackupBusy=false}
   }
   const completeCanonical=assistantCanonical;
   async function completeBackupRead(reader,size){
-    if(size<22||size>COMPLETE_BACKUP_MAX)throw Error('备份大小不受支持');
-    const tailSize=Math.min(65557,size),tail=await reader(size-tailSize,tailSize),tailView=new DataView(tail.buffer,tail.byteOffset,tail.byteLength);let eocd=-1;
-    for(let index=tail.length-22;index>=0;index--)if(tailView.getUint32(index,true)===0x06054b50&&index+22+tailView.getUint16(index+20,true)===tail.length){eocd=index;break}
-    if(eocd<0||tailView.getUint16(eocd+4,true)||tailView.getUint16(eocd+6,true))throw Error('不是汐序的完整备份，或文件已损坏');
-    const count=tailView.getUint16(eocd+10,true),directoryBytes=tailView.getUint32(eocd+12,true),directoryOffset=tailView.getUint32(eocd+16,true);
-    if(count<2||count>20002||tailView.getUint16(eocd+8,true)!==count||directoryBytes>4*1024*1024||directoryOffset+directoryBytes!==size-tailSize+eocd)throw Error('备份目录不完整或使用了不支持的 ZIP64');
-    const directory=await reader(directoryOffset,directoryBytes),view=new DataView(directory.buffer,directory.byteOffset,directory.byteLength),entries=new Map(),decoder=new TextDecoder('utf-8',{fatal:true});let cursor=0;
-    for(let index=0;index<count;index++){
-      if(cursor+46>directory.length||view.getUint32(cursor,true)!==0x02014b50)throw Error('备份目录损坏');
-      const flags=view.getUint16(cursor+8,true),method=view.getUint16(cursor+10,true),packed=view.getUint32(cursor+20,true),bytes=view.getUint32(cursor+24,true),length=view.getUint16(cursor+28,true),extra=view.getUint16(cursor+30,true),comment=view.getUint16(cursor+32,true),offset=view.getUint32(cursor+42,true),crc=view.getUint32(cursor+16,true),end=cursor+46+length+extra+comment;
-      if(end>directory.length||flags&~0x800||method!==0||packed!==bytes||view.getUint16(cursor+34,true)||offset>=directoryOffset)throw Error('只支持汐序导出的未加密完整备份');
-      const name=decoder.decode(directory.subarray(cursor+46,cursor+46+length));
-      if(!/^(?:manifest\.json|planner\.json|assets\/[a-f0-9]{64})$/.test(name)||entries.has(name)||bytes>(name==='planner.json'?40*1024*1024:name==='manifest.json'?4*1024*1024:ARCHIVE_FILE_LIMIT))throw Error('备份包含未知、重复或超限的文件');
-      entries.set(name,{name,bytes,offset,crc});cursor=end;
-    }
-    if(cursor!==directory.length)throw Error('备份目录尾部不一致');
-    const ranges=[];
-    const read=async name=>{
-      const item=entries.get(name);if(!item)throw Error('备份缺少 '+name);
-      const header=await reader(item.offset,30),local=new DataView(header.buffer,header.byteOffset,30),nameBytes=local.getUint16(26,true),extra=local.getUint16(28,true),start=item.offset+30+nameBytes+extra;
-      if(local.getUint32(0,true)!==0x04034b50||local.getUint16(6,true)&~0x800||local.getUint16(8,true)!==0||local.getUint32(14,true)!==item.crc||local.getUint32(18,true)!==item.bytes||local.getUint32(22,true)!==item.bytes||start+item.bytes>directoryOffset||decoder.decode(await reader(item.offset+30,nameBytes))!==name)throw Error('备份文件头与目录不一致');
-      if(ranges.some(range=>item.offset<range.end&&start+item.bytes>range.start))throw Error('备份条目范围重叠');ranges.push({start:item.offset,end:start+item.bytes});
-      const bytes=await reader(start,item.bytes);if(await documentCrc(bytes)!==item.crc)throw Error('备份内容校验失败');return bytes;
+    const entries=await backupZipDirectory(reader,size),decoder=new TextDecoder('utf-8',{fatal:true});
+    const small=async(name,maximum)=>{
+      const entry=entries.get(name);if(!entry||entry.size>maximum)throw Error('备份缺少必要清单，或元数据超出当前工作内存');
+      const bytes=new Uint8Array(entry.size);await backupVerifyEntry(entry,async(part,offset)=>bytes.set(part,offset));return bytes;
     };
-    const manifest=JSON.parse(decoder.decode(await read('manifest.json')));
+    const manifest=JSON.parse(decoder.decode(await small('manifest.json',DOCUMENT_WORKING_BYTES)));
     if(manifest.format!=='xixu-complete-backup'||manifest.version!==1||!Array.isArray(manifest.assets)||manifest.assets.length!==entries.size-2||!/^[a-f0-9]{64}$/.test(manifest.plannerHash))throw Error('完整备份清单无效');
-    const planner=await read('planner.json');if(planner.length!==manifest.plannerBytes||await archiveSha(planner)!==manifest.plannerHash)throw Error('备忘录和日程快照校验失败');
+    const planner=await small('planner.json',COMPLETE_PLANNER_BYTES);if(planner.length!==manifest.plannerBytes||await archiveSha(planner)!==manifest.plannerHash)throw Error('日程快照校验失败');
     const original=JSON.parse(decoder.decode(planner)),data=checkData(original,false);
-    if(JSON.stringify(completeCanonical(original))!==JSON.stringify(completeCanonical(data)))throw Error('这个备份需要数据转换。为避免改变原内容，本次没有覆盖；请保留文件。');
+    if(JSON.stringify(completeCanonical(original))!==JSON.stringify(completeCanonical(data)))throw Error('备份需要数据转换，本次未覆盖。请保留文件。');
     const expected=completeArchiveManifest(data),expectedMap=new Map(expected.map(item=>[item.hash,item.bytes])),seen=new Set();
     if(expected.length!==manifest.assets.length)throw Error('原件清单与日程数据不一致');
-    for(const asset of manifest.assets){if(seen.has(asset.hash)||expectedMap.get(asset.hash)!==asset.bytes)throw Error('原件清单不一致');seen.add(asset.hash);const bytes=await read('assets/'+asset.hash);if(bytes.length!==asset.bytes||await archiveSha(bytes)!==asset.hash)throw Error('原始图片或文档校验失败');await archiveStore(bytes,asset.hash);await archiveYield()}
+    for(const asset of manifest.assets){
+      const entry=entries.get('assets/'+asset.hash);if(seen.has(asset.hash)||expectedMap.get(asset.hash)!==asset.bytes||!entry||entry.size!==asset.bytes)throw Error('原件清单不一致');seen.add(asset.hash);
+      const verified=await backupVerifyEntry(entry);if(verified.hash!==asset.hash)throw Error('原件 SHA-256 校验失败');await archiveStoreSource(entry,asset.hash);await archiveYield();
+    }
+    await checkpointVerifyIndex(data);
     return {data,manifest};
   }
   async function completeBackupImport(file=null){
@@ -3873,7 +4050,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     try{
       let size,reader;
       if(window.XixuBackup){const info=JSON.parse(await completeNativeCall('choose'));size=info.size;reader=async(offset,length)=>{if(!length)return new Uint8Array();const result=new Uint8Array(length);for(let position=0;position<length;position+=131072){const count=Math.min(131072,length-position),bytes=archiveUnbase64(window.XixuBackup.readRange(offset+position,count));if(bytes.length!==count)throw Error('备份文件读取不完整');result.set(bytes,position);await archiveYield()}return result}}
-      else{if(!file)throw Error('请选择完整备份 ZIP');size=file.size;if(size>COMPLETE_WEB_MAX)throw Error('网页预览恢复限 64 MiB，请使用手机 App');reader=async(offset,length)=>new Uint8Array(await file.slice(offset,offset+length).arrayBuffer())}
+      else{if(!file)throw Error('请选择完整备份 ZIP');size=file.size;reader=async(offset,length)=>new Uint8Array(await file.slice(offset,offset+length).arrayBuffer())}
       const candidate=await completeBackupRead(reader,size);completeBackupCandidate={...candidate,base};
       assistantShowSheet('核对完整恢复','<p>文件已核对文字、原件和图片校验值。确认后将替换当前这台设备的日程数据；密钥、电脑配对信息不会导入。</p><ul><li>'+candidate.data.notes.length+' 条备忘录</li><li>'+candidate.data.tasks.length+' 个事项</li><li>'+candidate.data.lessons.length+' 项排课</li><li>'+candidate.data.scratchEntries.length+' 条碎片</li><li>'+candidate.manifest.assets.length+' 份独立原件或图片</li></ul><p>对话、时间信箱、变更记录和来源时间也在该快照内。建议先导出当前完整备份。</p><button class="tide-primary tide-full" data-action="complete-backup-commit">确认替换本机数据</button>','backup');
     }catch(error){notify(error.message||'完整恢复未完成，当前资料未覆盖')}
@@ -3885,9 +4062,71 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     courses.splice(0,courses.length,...data.courses);lessons.splice(0,lessons.length,...data.lessons);tasks=data.tasks;notes=data.notes;scratchEntries=data.scratchEntries;agentHistory=data.agentHistory;agentPreferences=data.agentPreferences;ocrCorrectionRules=data.ocrCorrectionRules;scheduleSettings=data.scheduleSettings;TERM_MONDAY=data.termStart;lastSaved=raw;storageBlocked=false;saveError.hidden=true;agentConversationResults.clear();agentConversationScroll.clear();agentVisibleMessages.clear();agentDraft=null;agentInputDraft=String(agentPreferences.conversationDrafts?.[activeConversationId()]||'');assistantSavedSources=new Map(assistantSourceRecords().map(item=>[item.id,{at:item.at,text:item.text}]));assistantSavedDone=new Map(tasks.map(item=>[item.id,Boolean(item.done)]));completeBackupCandidate=null;assistantCloseSheet();syncReminders();render(false);notify('完整备份已恢复，来源时间保留');
   }
   const settingsBeforeCompleteBackup=renderSettings;
-  renderSettings=function(){return settingsBeforeCompleteBackup()+'<div class="tide-section"><h2>完整数据备份</h2></div><div class="xixu-setting-actions"><button data-action="complete-backup-export">'+icon('archive')+'<span>导出完整备份（含图片与原件）</span>'+icon('chevron-right')+'</button><button data-action="complete-backup-import">'+icon('archive-restore')+'<span>恢复完整备份</span>'+icon('chevron-right')+'</button></div><p class="tide-note">旧 JSON 导出不含独立原件；完整备份使用 ZIP，包含文字、图片、源文件和来源时间。备份含私人资料，请自行妥善保存。</p><input type="file" id="xixu-complete-backup-file" accept=".zip,application/zip" hidden>'};
+  renderSettings=function(){return settingsBeforeCompleteBackup()+'<div class="tide-section"><h2>完整数据备份</h2></div><div class="xixu-setting-actions"><button data-action="checkpoint-list">'+icon('history')+'<span>按日期查看历史快照</span>'+icon('chevron-right')+'</button><button data-action="complete-backup-export">'+icon('archive')+'<span>导出完整备份（含图片与原件）</span>'+icon('chevron-right')+'</button><button data-action="complete-backup-import">'+icon('archive-restore')+'<span>恢复完整备份</span>'+icon('chevron-right')+'</button></div><p class="tide-note">完整备份支持分块读写与 ZIP64，容量随设备存储与浏览器文件能力变化。旧 JSON 只保留索引；跨设备请使用完整 ZIP，携带图片、源文件和来源时间。备份含私人资料，请自行妥善保存。</p><input type="file" id="xixu-complete-backup-file" accept=".zip,application/zip" hidden>'};
   root.addEventListener('click',event=>{const action=event.target.closest('[data-action]')?.dataset.action;if(action==='complete-backup-export')completeBackupExport();else if(action==='complete-backup-import'){if(window.XixuBackup)completeBackupImport();else root.querySelector('#xixu-complete-backup-file')?.click()}else if(action==='complete-backup-commit'){try{completeBackupCommit()}catch(error){notify(error.message||'未恢复，原数据保留')}}},true);
   root.addEventListener('change',event=>{if(event.target.id==='xixu-complete-backup-file'&&event.target.files?.[0])completeBackupImport(event.target.files[0])});
+
+  // A checkpoint is a complete local business snapshot, with immutable asset
+  // references. It deliberately excludes its own index to avoid recursive copies.
+  let checkpointBusy=false,checkpointMessage='';
+  function checkpointState(){const state=assistantState();if(!state.checkpoints)state.checkpoints={version:1,items:[]};return state.checkpoints}
+  function checkpointCounts(data){return ['courses','lessons','tasks','notes','scratchEntries','agentHistory'].map(key=>({key,count:data[key]?.length||0}))}
+  function checkpointData(){const data=assistantClone(snapshot());if(data.agentPreferences?.intelligence)delete data.agentPreferences.intelligence.checkpoints;return data}
+  async function checkpointCapture(label='手动快照',daily=false){
+    if(checkpointBusy||storageBlocked||completeBackupBusy||noteImportBusy)return null;
+    const index=checkpointState(),owner=agentPreferences,day=localDay();if(daily&&index.items.some(item=>item.day===day&&item.daily))return null;
+    checkpointBusy=true;
+    try{
+      const data=checkpointData(),bytes=new TextEncoder().encode(JSON.stringify(data)),hash=await archiveSha(bytes),assets=completeArchiveManifest(data),at=new Date().toISOString();
+      await archiveStore(bytes,hash);if(agentPreferences!==owner)return null;
+      const item={id:uid(),day,at,label,daily,hash,bytes:bytes.length,assets,counts:checkpointCounts(data)};index.items.push(item);
+      if(persist()===false){index.items.pop();throw Error('历史索引未保存，当前资料保留')}
+      checkpointMessage='';return item;
+    }finally{checkpointBusy=false}
+  }
+  async function checkpointRead(item){
+    if(item.bytes>COMPLETE_PLANNER_BYTES)throw Error('快照元数据超出当前资料存储范围');
+    const bytes=await archiveRead(item.hash);if(bytes.length!==item.bytes)throw Error('历史快照大小不符');
+    const original=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),data=checkData(original,false);
+    if(assistantStable(original)!==assistantStable(data))throw Error('这个快照需要格式迁移，未自动覆盖');
+    const assets=completeArchiveManifest(data),expected=new Map((item.assets||[]).map(asset=>[asset.hash,asset.bytes]));
+    if(expected.size!==assets.length||assets.some(asset=>expected.get(asset.hash)!==asset.bytes))throw Error('历史快照与原件清单不一致');
+    return data;
+  }
+  async function checkpointVerifyIndex(data){
+    for(const item of data.agentPreferences?.intelligence?.checkpoints?.items||[])await checkpointRead(item);
+  }
+  function checkpointList(day=''){
+    const items=checkpointState().items.filter(item=>!day||item.day===day).slice().reverse();
+    assistantShowSheet('历史快照',(checkpointMessage?'<p role="status">'+esc(checkpointMessage)+'</p>':'')+'<p>每天首次使用时保留一份本机快照，也可以手动保存。选择实际存在的日期和时刻恢复课表、事项、备忘录、碎片、对话及助手记录。原件不会因恢复而删除。</p><form id="xixu-checkpoint-filter" class="tide-form"><label class="tide-field">查看日期<input type="date" name="day" value="'+esc(day)+'"></label><button class="tide-secondary">按日期查找</button></form><button class="tide-secondary" data-action="checkpoint-create">保存当前快照</button>'+items.map(item=>'<article class="xixu-journal-row"><strong>'+esc(item.label)+'</strong><time>'+esc(new Date(item.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}))+'</time><p>'+item.counts.map(value=>esc(({courses:'课程',lessons:'排课',tasks:'事项',notes:'备忘录',scratchEntries:'碎片',agentHistory:'消息'})[value.key])+' '+value.count).join(' · ')+'</p><button class="tide-secondary" data-action="checkpoint-preview" data-id="'+esc(item.id)+'">核对这一时刻</button></article>').join('')+(items.length?'':'<p>这个日期尚无快照。不能恢复安装此功能前未记录的时刻。</p>'),'checkpoints');
+  }
+  async function checkpointPreview(id){
+    if(agentPending||noteImportBusy||completeBackupBusy||checkpointBusy)throw Error('请先结束当前处理');
+    const item=checkpointState().items.find(entry=>entry.id===id);if(!item)throw Error('快照已不存在');
+    const base=JSON.stringify(snapshot()),data=await checkpointRead(item);
+    for(const asset of item.assets){const checked=await archiveWalk(asset.hash);if(checked.bytes!==asset.bytes)throw Error('有历史原件缺失，未恢复')}
+    if(JSON.stringify(snapshot())!==base)throw Error('核对期间资料已变化，请重新选择');
+    const current=checkpointCounts(snapshot()),target=checkpointCounts(data);completeBackupCandidate={data,base,checkpointId:id};
+    assistantShowSheet('核对历史恢复','<p>目标：'+esc(new Date(item.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}))+'。保存前会再留一份当前快照，方便返回。</p><ul>'+target.map((value,index)=>'<li>'+esc(({courses:'课程',lessons:'排课',tasks:'事项',notes:'备忘录',scratchEntries:'碎片',agentHistory:'对话消息'})[value.key])+'：'+current[index].count+' → '+value.count+'</li>').join('')+'</ul><p>这是完整业务快照恢复，包含当时的助手状态。模型密钥和电脑配对不在快照内。</p><button class="tide-primary tide-full" data-action="checkpoint-restore">确认恢复这个时刻</button>','checkpoint-preview');
+  }
+  async function checkpointRestore(){
+    const candidate=completeBackupCandidate;if(!candidate?.checkpointId||JSON.stringify(snapshot())!==candidate.base)throw Error('恢复预览已失效，请重新核对');
+    const unchanged=assistantStable(checkpointData()),before=await checkpointCapture('历史恢复前的快照');if(assistantStable(checkpointData())!==unchanged)throw Error('保留快照期间资料已变化，请重新核对');if(!before)throw Error('未能保留恢复前快照，本次没有替换');
+    // Keep the full index, including the snapshot just captured, across restore.
+    if(!candidate.data.agentPreferences.intelligence)throw Error('目标快照缺少助手状态');
+    candidate.data.agentPreferences.intelligence.checkpoints=assistantClone(checkpointState());candidate.base=JSON.stringify(snapshot());
+    completeBackupCommit();notify('已恢复所选历史快照；恢复前状态仍可在历史中查看');
+  }
+  root.addEventListener('click',event=>{
+    const button=event.target.closest('[data-action]'),action=button?.dataset.action;
+    if(action==='checkpoint-list')checkpointList();
+    else if(action==='checkpoint-create')checkpointCapture().then(item=>{if(item){checkpointList();notify('当前快照已保存')}}).catch(error=>notify(error.message));
+    else if(action==='checkpoint-preview')checkpointPreview(button.dataset.id).catch(error=>notify(error.message));
+    else if(action==='checkpoint-restore')checkpointRestore().catch(error=>notify(error.message));
+  });
+  root.addEventListener('submit',event=>{if(event.target.id!=='xixu-checkpoint-filter')return;event.preventDefault();checkpointList(String(new FormData(event.target).get('day')||''))});
+  const checkpointTick=()=>{if(!document.hidden)checkpointCapture('每日首次使用快照',true).catch(()=>{checkpointMessage='最近一次每日快照未能保存，请检查可用存储；当前资料仍保留。'})};
+  setTimeout(checkpointTick,0);setInterval(checkpointTick,60000);
 
   const motionPreference = matchMedia('(prefers-reduced-motion: reduce)');
   const transparencyPreference = matchMedia('(prefers-reduced-transparency: reduce)');

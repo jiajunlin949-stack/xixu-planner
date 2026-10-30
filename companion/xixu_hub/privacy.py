@@ -5,13 +5,42 @@ import re
 import secrets
 import threading
 import time
+from pathlib import Path
 
 
 def redact(text):
     text = re.sub(r'(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)', '[电话已隐藏]', str(text))
     text = re.sub(r'(?i)(学号|工号|身份证|student\s*id)\s*[:：]?\s*[A-Za-z0-9-]{5,24}', r'\1：[编号已隐藏]', text)
     text = re.sub(r'(?<![\w.])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?!\w)', '[邮箱已隐藏]', text)
+    text = re.sub(r'(?<!\d)\d{17}[\dXx](?!\w)|(?<!\d)\d{15}(?!\d)|(?<!\d)\d{16,19}(?!\d)', '[证件或卡号已隐藏]', text)
+    text = re.sub(r'((?:姓名|联系人|收件人|发件人)\s*[:：]\s*)[\u3400-\u9fff]{2,6}(?=[\s，。；、;]|$)', r'\1[姓名已隐藏]', text)
+    text = re.sub(r'(?i)((?:api[_ -]?key|token|密钥|密码)\s*[:：=]\s*)[^\s,，;；]{4,}', r'\1[密钥已隐藏]', text)
     return text
+
+
+class RedactionPolicy:
+    def __init__(self, directory):
+        self.path, self.lock = Path(directory) / 'privacy-terms.json', threading.RLock()
+
+    def terms(self):
+        with self.lock:
+            return json.loads(self.path.read_text('utf-8')).get('terms', []) if self.path.exists() else []
+
+    def save(self, terms):
+        terms = list(dict.fromkeys(term.strip() for term in terms if term.strip()))
+        if len(terms) > 500 or any(len(term) > 80 for term in terms):
+            raise ValueError('隐藏词表超出范围。')
+        with self.lock:
+            temporary = self.path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'terms': terms}, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(self.path)
+        return {'terms': terms}
+
+    def apply(self, text):
+        value = str(text)
+        for term in sorted(self.terms(), key=len, reverse=True):
+            value = value.replace(term, '[已隐藏]')
+        return redact(value)
 
 
 def fingerprint(config):
@@ -20,7 +49,8 @@ def fingerprint(config):
 
 
 class Approvals:
-    def __init__(self, store):
+    def __init__(self, store, redactor=redact):
+        self.redact = redactor
         self.store, self.lock, self.tickets = store, threading.RLock(), {}
 
     def prepare(self, owner, config, query, sources, local_context, temporal):
@@ -31,9 +61,9 @@ class Approvals:
                 raise ValueError('待确认请求过多，请稍后重试。')
             ticket = secrets.token_hex(16)
             # Only redacted, visible source fields are ever offered to the model.
-            visible = [{'index': i + 1, 'title': redact(source['title']), 'text': '原始时间：' + redact(source.get('metadata', {}).get('sent_at') or source.get('metadata', {}).get('source_updated_at') or '未知') + '\n' + redact(source['text'])} for i, source in enumerate(sources)]
-            prepared = {'ticket': ticket, 'question': redact(query), 'sources': visible,
-                        'local_context': [redact(text) for text in local_context],
+            visible = [{'index': i + 1, 'title': self.redact(source['title']), 'text': '原始时间：' + self.redact(source.get('metadata', {}).get('sent_at') or source.get('metadata', {}).get('source_updated_at') or '未知') + '\n' + self.redact(source['text'])} for i, source in enumerate(sources)]
+            prepared = {'ticket': ticket, 'question': self.redact(query), 'sources': visible,
+                        'local_context': [self.redact(text) for text in local_context],
                         'destination': config.get('base_url', ''), 'model': config.get('model', ''),
                         'warning': '自动打码不能保证识别所有姓名或敏感信息，请逐段核对。',
                         'temporal': temporal, 'expires_in': 300}

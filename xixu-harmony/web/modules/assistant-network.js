@@ -1,6 +1,15 @@
   const assistantModelPending=new Map();let assistantPrivacy=null,assistantStreamFrame=0;
   function assistantModelConfig(){try{return JSON.parse(window.XixuModels?.publicConfig?.()||'{}')}catch(_){return {}}}
-  function assistantMask(value){return String(value||'').replace(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/g,'[电话已隐藏]').replace(/(学号|工号|身份证|student\s*id)\s*[:：]?\s*[A-Za-z0-9-]{5,24}/gi,'$1：[编号已隐藏]').replace(/[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[邮箱已隐藏]')}
+  function assistantMask(value){
+    let text=String(value||'');for(const term of [...(assistantState().privateTerms||[])].sort((a,b)=>b.length-a.length))text=text.split(term).join('[已隐藏]');
+    return text.replace(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/g,'[电话已隐藏]')
+      .replace(/(学号|工号|身份证|student\s*id)\s*[:：]?\s*[A-Za-z0-9-]{5,24}/gi,'$1：[编号已隐藏]')
+      .replace(/[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,'[邮箱已隐藏]')
+      .replace(/(?<!\d)(?:\d{17}[\dXx]|\d{15}|\d{16,19})(?!\w)/g,'[证件或卡号已隐藏]')
+      .replace(/((?:姓名|联系人|收件人|发件人)\s*[:：]\s*)[\u3400-\u9fff]{2,6}(?=[\s，。；、;]|$)/g,'$1[姓名已隐藏]')
+      .replace(/((?:api[_ -]?key|token|密钥|密码)\s*[:：=]\s*)[^\s,，;；]{4,}/gi,'$1[密钥已隐藏]');
+  }
+  function assistantPrivacySettings(){assistantShowSheet('本机隐藏词表','<p>填写自己的姓名、联系人或其他不希望发送的词。手机与电脑词表分别保存在各自设备，发送核对时自动应用。</p><form id="xixu-private-terms-form" class="tide-form"><label class="tide-field">每行一个词<textarea name="terms" rows="6" maxlength="40000">'+esc((assistantState().privateTerms||[]).join('\n'))+'</textarea></label><button class="tide-primary">保存隐藏词表</button></form>','private-terms')}
   function assistantApprove({destination,model='',query,refs=[],history=[],request=null}){
     if(assistantPrivacy)return Promise.reject(Error('还有一项发送核对未完成'));
     if(request&&request!==agentRequest)return Promise.resolve(null);
@@ -125,6 +134,7 @@
     const prepared=await knowledgeCall('chat-prepare',{query:approved.query,local_context:approved.refs.map(ref=>ref.text),conversation_id:'xixu-'+request.conversationId,limit:5},request);
     if(request!==agentRequest)return null;
     const remote=knowledgeReferences(prepared.source_refs||[]).map((ref,index)=>({...ref,cloudIndex:index+1,title:prepared.sources?.[index]?.title||assistantMask(ref.title),text:prepared.sources?.[index]?.text||assistantMask(ref.text)}));
+    const temporal=assistantTemporalAnswer(approved.query,remote);if(temporal)return {...temporal,source:'computer'};
     if(assistantLocalEnough(approved.query,remote))return {answer:localAgentAnswer(approved.query,remote),refs:remote,action:{type:'none'},source:'computer',tool:'search_notes'};
     if(!prepared.model_configured)return {answer:remote.length?'电脑找到了相关片段，可以展开来源核对；电脑模型尚未配置。':'电脑也没有找到充分资料。',refs:[...remote,...approved.refs],query:approved.query,requiresPhoneModel:true,action:{type:'none'},source:'computer'};
     const temporary=(prepared.local_context||[]).map((text,index)=>({id:'temporary:'+index,title:'本次手机片段',text,temporary:true}));
@@ -138,25 +148,37 @@
     const value=JSON.parse(String(text).replace(/^```(?:json)?\s*|\s*```$/g,''));
     if(typeof value.answer!=='string'||!value.answer.trim()||value.answer.length>16000)throw Error('回答正文为空或超出容量，未截断执行');
     for(const ref of refs)if(ref.baseVersion){const target=ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):null;if(target&&assistantStable(target)!==ref.baseVersion&&value.tool_call?.name==='update_event')throw Error('检索后事项已改变，请重新查找后修改')}
-    if(value.tool_call){const tool=String(value.tool_call.name||''),prepared=assistantTool(tool,value.tool_call.arguments,{refs});if(prepared.readOnly){const answer=tool==='search_notes'?localAgentAnswer(value.tool_call.arguments.query,prepared.refs):prepared.date+' 的占用记录：\n'+prepared.occupied.map(item=>item.label+' · '+assistantFormatMinute(item.start)+'—'+assistantFormatMinute(item.end)).join('\n')+(prepared.deadlines.length?'\n截止事项：'+prepared.deadlines.map(item=>item.title).join('、'):'');return {answer,refs:prepared.refs||refs,action:{type:'none'},source:'local',tool}}return {answer:String(value.answer||'已整理，请核对后确认。'),refs,action:prepared,source:'model',tool}}
+    if(value.tool_call){const tool=String(value.tool_call.name||''),prepared=assistantTool(tool,value.tool_call.arguments,{refs});if(prepared.type==='search_web')return {answer:'可以进一步查公开网页，请先核对搜索词。尚未发起联网搜索。',refs,action:prepared,source:'model',tool};if(prepared.readOnly){const answer=tool==='search_notes'?localAgentAnswer(value.tool_call.arguments.query,prepared.refs):prepared.date+' 的占用记录：\n'+prepared.occupied.map(item=>item.label+' · '+assistantFormatMinute(item.start)+'—'+assistantFormatMinute(item.end)).join('\n')+(prepared.deadlines.length?'\n截止事项：'+prepared.deadlines.map(item=>item.title).join('、'):'');return {answer,refs:prepared.refs||refs,action:{type:'none'},source:'local',tool}}return {answer:String(value.answer||'已整理，请核对后确认。'),refs,action:prepared,source:'model',tool}}
     const result=normalizeAgentResult(value,refs);result.answer=value.answer;
     const id=result.action.taskId||result.action.noteId||result.action.courseId,ref=refs.find(item=>item.id===id);if(ref?.baseVersion)result.action.baseVersion=ref.baseVersion;
     return result;
   }
+  async function assistantSearchPublicWeb(query,request){
+    request.route='public-web-search';request.intent='search_web';
+    if(!knowledgeEnabled())return {answer:'联网搜索已独立接入。请在设置中启用电脑扩展并配对，在电脑管理页配置 Brave Search 密钥后再试；本次没有发送笔记或发起搜索。',refs:[],action:{type:'none'},source:'local'};
+    const health=await knowledgeCall('health',{},request);if(request!==agentRequest)return null;
+    const config=health.web_search;if(!config?.enabled||!config.key_configured)return {answer:'请先在电脑管理页的“联网搜索工具”启用 Brave Search 并保存搜索服务 Key。模型 Key 与搜索 Key 分开，本次尚未发起联网搜索。',refs:[],action:{type:'none'},source:'local'};
+    const approved=await assistantApprove({destination:knowledgeStatus().server+' → '+config.destination,query,request});if(request!==agentRequest)return null;
+    if(!approved)return {answer:'已取消联网搜索，内容留在本机。',refs:[],action:{type:'none'},source:'local',cancelled:true};
+    const result=await knowledgeCall('web-search',{query:approved.query,limit:5,approved:true},request);if(request!==agentRequest)return null;
+    const refs=[];for(const item of result.results){const key='web:'+await archiveSha(new TextEncoder().encode(item.url));refs.push({id:key,documentId:key,chunkId:key,title:item.title,text:item.text,url:item.url,recordType:'web',kind:'网页',action:'agent-web-source'})}
+    return {answer:refs.length?'实际搜索词：'+result.query+'\n找到以下公开网页摘要：\n'+refs.map((ref,index)=>'['+(index+1)+'] '+ref.title+'\n'+ref.text).join('\n\n')+'\n\n可展开来源访问原网页；搜索摘要不代表已阅读全文。':'本次没有找到可用的公开网页结果。',refs,action:{type:'none'},source:'web',tool:'search_web'};
+  }
   async function assistantSubmitAgent(form){
     if(agentPending){notify('上一条仍在处理中，可以停止后再发送');return}
     const original=String(new FormData(form).get('question')||''),query=original.trim();if(!query)return;if(query.length>AGENT_MESSAGE_MAX_CHARS){notify('内容已留在草稿中，请拆分发送或保存为笔记');return}
-    const conversationId=activeConversationId(),now=new Date().toISOString();let userId=uid(),local=null;
-    try{const scheduleQuery=contextualRescheduleQuery(query,conversationId);local=scheduleQuery?localRescheduleAction(query,[],conversationId):localAgentCommand(query)}catch(error){local={answer:'本机参数还不能完成核对：'+String(error.message||'请补充说明'),refs:[],action:{type:'none'},source:'local',error:true}}
+    const conversationId=activeConversationId(),now=new Date().toISOString(),wantsWeb=assistantRouteIntent(query)==='search_web';let userId=uid(),local=null;
+    try{const scheduleQuery=wantsWeb?'':contextualRescheduleQuery(query,conversationId);local=wantsWeb?null:scheduleQuery?localRescheduleAction(query,[],conversationId):localAgentCommand(query)}catch(error){local={answer:'本机参数还不能完成核对：'+String(error.message||'请补充说明'),refs:[],action:{type:'none'},source:'local',error:true}}
     if(agentEditingId){const index=agentHistory.findIndex(item=>item.id===agentEditingId&&String(item.conversationId||'default')===conversationId);if(index>=0){userId=agentEditingId;agentHistory[index].text=query;if(agentHistory[index+1]?.role==='assistant')agentHistory.splice(index+1,1)}agentEditingId=''}
     if(!agentHistory.some(item=>item.id===userId))agentHistory.push({id:userId,conversationId,role:'user',text:query,source:'local',createdAt:now});
     agentInputDraft='';saveAgentInput();agentConversationMetadata()[conversationId]={...agentPreferences.conversations[conversationId],createdAt:agentPreferences.conversations[conversationId]?.createdAt||now,updatedAt:now};
     const request={conversationId,userId,query,refs:[],stage:'local',started:performance.now(),route:'rule',day:DEMO_DAY};agentRequest=request;agentPending=true;agentDraft={answer:'',refs:[],action:{type:'none'},source:'local'};agentConversationResults.set(conversationId,agentDraft);persist();render(false);
     const finish=result=>{if(request===agentRequest)finishAgent(query,result,request)};
     try{
+      if(wantsWeb){const result=await assistantSearchPublicWeb(query,request);if(result)finish(result);return}
       if(local){finish(local);return}
       await prepareAgentRagIndex();if(request!==agentRequest)return;
-      const retrievalQuery=contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId);let refs=semanticAgentSearch(retrievalQuery),effectiveQuery=query;for(const ref of refs){const record=ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):null;if(record)ref.baseVersion=assistantStable(record)}request.refs=refs;request.route='phone-retrieval';request.intent=assistantRouteIntent(query,Boolean(assistantState().pendingSlots[conversationId]));
+      const retrievalQuery=contextualAgentRagQuery(query,activeAgentHistory(conversationId).filter(item=>item.id!==userId),conversationId);let refs=semanticAgentSearch(retrievalQuery),effectiveQuery=query;for(const ref of refs){const record=ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):ref.recordType==='scratch'?scratchEntries.find(item=>item.id===ref.id):null;if(record){ref.baseVersion=assistantStable(record);if(/后来|改了|改期|延期|最新|什么时候|冲突|以.*为准/.test(query))ref.baseVersionHash=await archiveSha(new TextEncoder().encode(ref.baseVersion))}}if(request!==agentRequest)return;request.refs=refs;request.route='phone-retrieval';request.intent=assistantRouteIntent(query,Boolean(assistantState().pendingSlots[conversationId]));
       const temporal=assistantTemporalAnswer(query,refs);if(temporal){finish(temporal);return}
       if(!agentMutationIntent(query)&&assistantLocalEnough(query,refs)){finish(localAgentResult(query,refs,conversationId));return}
       if(!agentMutationIntent(query)&&knowledgeEnabled()){
@@ -181,7 +203,7 @@
     request.cancelled=true;finishAgent(request.query,{answer:'已停止本次处理。问题保留在对话里，没有执行日程修改。',refs:request.refs||[],action:{type:'none'},source:'local',cancelled:true},request);
   }
   function assistantRequestStructuredModel(messages,receive){
-    if(!window.XixuModels||!Array.isArray(messages)||typeof receive!=='function')return false;
+    if(!window.XixuModels||!Array.isArray(messages)||typeof receive!=='function'||assistantPrivacy||assistantVisionApproval)return false;
     (async()=>{
       const profile=assistantModelConfig(),vision=messages.some(item=>Array.isArray(item.content)&&item.content.some(part=>part.type==='image_url'));
       if(vision&&!profile.capabilities?.vision)throw Error('所选模型未确认支持图片，请先在模型设置核对');
@@ -204,4 +226,14 @@
   root.addEventListener('click',event=>{const action=event.target.closest('[data-action]')?.dataset.action;if(action==='assistant-approve-send')assistantFinishPrivacy();else if(action==='assistant-stop')assistantStop();else if(action==='assistant-mask-terms'){const terms=String(root.querySelector('#assistant-private-terms')?.value||'').split(/[,，\n]/).map(term=>term.trim()).filter(Boolean);for(const field of root.querySelectorAll('.xixu-assistant-sheet textarea'))for(const term of terms)field.value=field.value.split(term).join('[已隐藏]');if(assistantPrivacy)assistantPrivacy.prepared.refs.forEach((ref,index)=>{for(const term of terms)ref.title=ref.title.split(term).join('[已隐藏]');const title=root.querySelector('[data-approval-source-title="'+index+'"]');if(title)title.textContent=ref.title})}
     else if(action==='assistant-vision-approved'){const resolve=assistantVisionApproval;assistantVisionApproval=null;assistantCloseSheet();resolve?.(true)}
   },true);
+  root.addEventListener('click',event=>{
+    const button=event.target.closest('[data-action]'),action=button?.dataset.action;
+    if(action==='assistant-start-web'){
+      const form=document.createElement('form'),input=document.createElement('textarea');input.name='question';input.value='联网搜索：'+String(button.dataset.query||'');form.append(input);assistantSubmitAgent(form);
+    }else if(action==='agent-web-source'){
+      try{const url=new URL(button.dataset.url);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('链接不可用');if(window.XixuBrowser)window.XixuBrowser.open(url.href);else window.open(url.href,'_blank','noopener,noreferrer')}catch(_){notify('原网页链接无效')}
+    }
+  });
+  root.addEventListener('click',event=>{if(event.target.closest('[data-action]')?.dataset.action==='assistant-private-terms')assistantPrivacySettings()});
+  root.addEventListener('submit',event=>{if(event.target.id!=='xixu-private-terms-form')return;event.preventDefault();const terms=[...new Set(String(new FormData(event.target).get('terms')||'').split(/\r?\n/).map(term=>term.trim()).filter(Boolean))];if(terms.length>500||terms.some(term=>term.length>80)){notify('最多保存 500 个隐藏词，每个词最多 80 字符');return}const state=assistantState(),previous=state.privateTerms;state.privateTerms=terms;if(persist()===false){state.privateTerms=previous;notify('隐藏词表未保存，请检查可用存储');return}assistantCloseSheet();notify('隐藏词表已保存')});
   window.addEventListener('pagehide',()=>{assistantCancelPrivacy();assistantCancelVision();for(const id of [...assistantModelPending.keys()])assistantResolveModel(id,Error('页面已关闭'))});

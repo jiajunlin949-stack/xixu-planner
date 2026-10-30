@@ -61,7 +61,7 @@ export class KnowledgeBridge {
     const syncOperation: boolean = ['sync-status', 'sync-begin', 'sync-note', 'sync-asset', 'sync-commit'].includes(operation);
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(id) || payload.length > (syncOperation ? 300000 : 22000)) { return false; }
     if (deviceInfo.sdkApiVersion < 20) { this.reply(id, false, '电脑知识库连接需要 HarmonyOS API 20 或以上版本。'); return true; }
-    if (!['pair', 'health', 'search', 'chat', 'excerpt', 'chat-prepare', 'chat-confirm', 'chat-stream', 'suggestions'].includes(operation) && !syncOperation) { return false; }
+    if (!['pair', 'health', 'search', 'chat', 'excerpt', 'chat-prepare', 'chat-confirm', 'chat-stream', 'suggestions', 'web-search'].includes(operation) && !syncOperation) { return false; }
     if (this.flights.has(id) || this.flights.size >= 4) { return false; }
     this.request(id, operation, payload);
     return true;
@@ -86,6 +86,8 @@ export class KnowledgeBridge {
         method = http.RequestMethod.POST;
       } else if (operation === 'chat-prepare' || operation === 'chat-confirm' || operation === 'chat-stream') {
         path = '/v1/chat/' + (operation === 'chat-prepare' ? 'prepare' : operation === 'chat-stream' ? 'stream' : 'confirm'); body = payload; method = http.RequestMethod.POST;
+      } else if (operation === 'web-search') {
+        path = '/v1/tools/search-web'; body = payload; method = http.RequestMethod.POST;
       } else if (operation === 'suggestions') {
         path = '/v1/suggestions';
       } else if (operation === 'search' || operation === 'chat') {

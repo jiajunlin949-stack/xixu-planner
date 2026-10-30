@@ -18,13 +18,14 @@ from .chat_exports import parse_chat
 from .config import Settings
 from .models import ModelClient, ModelError, validate_endpoint
 from .note_sync import Conflict, NoteSync
-from .originals import Originals, MAX_FILE
+from .originals import Originals, MAX_FILE, MAX_CHAT_FILE
 from .security import Devices
 from .store import Store
 from .vectors import Retriever
 from .intelligence import Suggestions, tool_manifest
-from .privacy import Approvals
+from .privacy import Approvals, RedactionPolicy
 from .telemetry import Telemetry
+from .search_tools import WebSearch
 
 
 class Body(BaseModel):
@@ -34,6 +35,20 @@ class Body(BaseModel):
 class Search(Body):
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=6, ge=1, le=12)
+
+
+class PublicWebSearch(Search):
+    approved: Literal[True]
+
+
+class PrivacyTerms(Body):
+    terms: list[str] = Field(default_factory=list, max_length=500)
+
+
+class WebSearchSettings(Body):
+    enabled: bool = False
+    api_key: str | None = Field(default=None, max_length=500)
+    clear_key: bool = False
 
 
 class Chat(Search):
@@ -124,7 +139,9 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
     sync = NoteSync(store, originals)
     retriever = Retriever(store, directory / 'models', semantic, backend)
     model = ModelClient(settings)
-    approvals, suggestions, telemetry = Approvals(store), Suggestions(store), Telemetry(store)
+    redaction = RedactionPolicy(directory)
+    web_search = WebSearch(directory, settings.vault, redaction.apply)
+    approvals, suggestions, telemetry = Approvals(store, redaction.apply), Suggestions(store), Telemetry(store)
     app = FastAPI(title='汐序个人知识库', version='0.3.0', docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.devices, app.state.sync = store, devices, sync
     app.state.originals, app.state.retriever, app.state.model = originals, retriever, model
@@ -141,7 +158,7 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
                 length = request.headers.get('content-length', '')
                 if not length.isdigit():
                     return JSONResponse({'detail': '请提供完整请求长度。'}, 411)
-                maximum = MAX_FILE + 65536 if request.url.path == '/v1/imports/chat/preview' else 300000
+                maximum = MAX_CHAT_FILE + 65536 if request.url.path == '/v1/imports/chat/preview' else 300000
                 if int(length) > maximum:
                     return JSONResponse({'detail': '请求超出本接口容量。'}, 413)
         response = await call_next(request)
@@ -185,6 +202,7 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
     @app.get('/v1/health', dependencies=[Depends(authenticated)])
     def health():
         return {**store.stats(), 'mode': mode, 'vector_backend': backend, 'semantic_enabled': semantic,
+                'web_search': web_search.public(), 'reranker': retriever.reranker.public(),
                 'notes_sync': True, 'notes_sync_version': 1, 'answer_model_configured': bool(settings.vault.get('model:' + settings.read()['provider'])),
                 'chat_import': mode == 'extended', 'notice': '此状态不代表向量索引已完成或平台全部历史已同步。'}
 
@@ -211,6 +229,29 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
         with store.connection() as db:
             db.execute('UPDATE devices SET revoked=1 WHERE id=?', (device_id,))
         return {'revoked': True}
+
+    @app.get('/v1/settings/privacy', dependencies=[Depends(owner)])
+    def privacy_terms():
+        return {'terms': redaction.terms()}
+
+    @app.put('/v1/settings/privacy', dependencies=[Depends(owner)])
+    def save_privacy_terms(body: PrivacyTerms):
+        return redaction.save(body.terms)
+
+    @app.get('/v1/settings/web-search', dependencies=[Depends(owner)])
+    def web_search_settings():
+        return web_search.public()
+
+    @app.put('/v1/settings/web-search', dependencies=[Depends(owner)])
+    def save_web_search(body: WebSearchSettings):
+        return web_search.save(body.enabled, body.api_key, body.clear_key)
+
+    @app.post('/v1/tools/search-web')
+    async def search_web(body: PublicWebSearch, principal=Depends(authenticated)):
+        started = time.monotonic()
+        result = await web_search.search(body.query, body.limit)
+        telemetry.record('public-web-search', started, len(result['results']), confirmed=True)
+        return result
 
     @app.post('/v1/search')
     def search(body: Search, principal=Depends(authenticated)):
@@ -350,8 +391,8 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
             raise HTTPException(409, '当前为纯备忘录服务模式，未启用聊天资料导入。')
         if len(conversation_name) > 200 or len(account_id) > 200:
             raise ValueError('来源名称过长。')
-        content = await file.read(MAX_FILE + 1)
-        if not content or len(content) > MAX_FILE:
+        content = await file.read(MAX_CHAT_FILE + 1)
+        if not content or len(content) > MAX_CHAT_FILE:
             raise ValueError('聊天文件须为 1 字节至 20 MiB。')
         parsed = await run_in_threadpool(parse_chat, platform, file.filename or '', content,
                                         conversation_name=conversation_name, account_id=account_id)
@@ -391,7 +432,7 @@ def create_app(data_dir=None, *, token=None, mode='extended', backend='milvus', 
     def original(key: str):
         if not originals.path(key).is_file():
             raise HTTPException(404, '原件不存在。')
-        originals.read(key)
+        originals.verify(key)
         return FileResponse(originals.path(key), filename=key + '.original', media_type='application/octet-stream')
 
     return app

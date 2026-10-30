@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -45,6 +46,7 @@ class NoteSync:
         return {'session': session, 'note_count': count}
 
     def save(self, folder, state):
+        state['expires'] = time.time() + 3600
         temporary = folder / 'manifest.tmp'
         with temporary.open('w', encoding='utf-8') as stream:
             json.dump(state, stream, ensure_ascii=False)
@@ -95,7 +97,7 @@ class NoteSync:
                 if path.read_bytes() != content:
                     raise Conflict('同一笔记分块内容发生变化。')
                 return {'received': True, 'replayed': True}
-            if info['bytes'] + len(content) > 2 * 1024 * 1024 or state['received_bytes'] + len(content) > 1024 ** 3:
+            if info['bytes'] + len(content) > 2 * 1024 * 1024 or shutil.disk_usage(folder).free < len(content) + 1024 * 1024:
                 raise ValueError('同步暂存超出容量范围，未截断写入。')
             path.write_bytes(content)
             info['received'][str(part)] = hashlib.sha256(content).hexdigest()
@@ -113,9 +115,17 @@ class NoteSync:
         with self.lock:
             folder, state = self.load(owner, session)
             if self.originals.path(key).exists():
-                existing = self.originals.read(key)
-                if len(existing) != total or existing[offset:offset + len(content)] != content:
-                    raise Conflict('原件哈希与分块内容不一致。')
+                cached = state['assets'].get(key, {})
+                if cached and cached.get('total') != total:
+                    raise Conflict('已有原件声明大小发生变化。')
+                if not cached.get('existing_verified') and self.originals.verify(key) != total:
+                    raise Conflict('已有原件大小与声明不一致。')
+                with self.originals.path(key).open('rb') as stream:
+                    stream.seek(offset)
+                    if stream.read(len(content)) != content:
+                        raise Conflict('已有原件与分块内容不一致。')
+                state['assets'][key] = {'total': total, 'received': total, 'existing_verified': True}
+                self.save(folder, state)
                 return {'received': True, 'complete': True, 'replayed': True}
             info = state['assets'].setdefault(key, {'total': total, 'received': 0})
             if info['total'] != total:
@@ -127,8 +137,8 @@ class NoteSync:
                     if stream.read(len(content)) != content:
                         raise Conflict('重试的原件分块与已暂存内容不同。')
                 return {'received': True, 'complete': info['received'] == total, 'replayed': True}
-            if offset != info['received'] or state['received_bytes'] + len(content) > 1024 ** 3:
-                raise ValueError('原件分块不连续或同步总量超过 1 GiB。')
+            if offset != info['received'] or shutil.disk_usage(folder).free < len(content) + 1024 * 1024:
+                raise ValueError('原件分块不连续或电脑可用存储不足。')
             with path.open('ab') as stream:
                 # Recover a crash between durable file append and manifest
                 # publication without appending the same bytes twice.
@@ -139,7 +149,7 @@ class NoteSync:
                 os.fsync(stream.fileno())
             info['received'] += len(content)
             state['received_bytes'] += len(content)
-            if info['received'] == total and self.originals.put(path.read_bytes()) != key:
+            if info['received'] == total and self.originals.put_file(path, key) != key:
                 raise ValueError('原件 SHA-256 不符，未提交笔记。')
             self.save(folder, state)
             return {'received': True, 'complete': info['received'] == total}
@@ -168,7 +178,7 @@ class NoteSync:
                     raise ValueError('文档图片原件编号无效。')
                 assets.append(image['hash'])
         for key in set(assets):
-            self.originals.read(key)
+            self.originals.verify(key)
         return sorted(set(assets))
 
     def commit(self, owner, session):

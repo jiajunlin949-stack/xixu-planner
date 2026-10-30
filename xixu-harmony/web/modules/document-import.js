@@ -1,12 +1,13 @@
   // Document projections are for reading/search. The exact input bytes remain
   // in the content-addressed archive and are exported without re-encoding.
-  const DOCUMENT_FORMATS=['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp'];
-  const NOTE_IMPORT_ACCEPT='.txt,.md,.markdown,.csv,.html,.htm,.json,.docx,.pdf,.png,.jpg,.jpeg,.webp';
+  const DOCUMENT_FORMATS=['txt','md','markdown','csv','html','htm','json','docx','pdf','png','jpg','jpeg','webp','hdoc','doc'];
+  const NOTE_IMPORT_ACCEPT='.txt,.md,.markdown,.csv,.html,.htm,.json,.docx,.pdf,.png,.jpg,.jpeg,.webp,.hdoc,.doc';
   let noteImportBusy=false,noteImportGeneration=0;
-  const DOCUMENT_IMAGE_BUDGET=64*1024*1024;
+  const DOCUMENT_WORKING_BYTES=64*1024*1024,DOCUMENT_IMAGE_BUDGET=64*1024*1024;
+  let documentImportProgress='';
   function documentMime(name){
     const ext=String(name).split('.').pop().toLowerCase();
-    return ({pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',html:'text/html',htm:'text/html',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',json:'application/json'})[ext]||'text/plain';
+    return ({hdoc:'application/octet-stream',doc:'application/msword',pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',html:'text/html',htm:'text/html',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',json:'application/json'})[ext]||'text/plain';
   }
   function documentText(bytes){
     let text;
@@ -89,21 +90,41 @@
   async function documentPdf(bytes){
     if(!globalThis.pdfjsLib?.getDocument)throw Error('PDF 读取组件未就绪');
     if(String.fromCharCode(...bytes.subarray(0,5))!=='%PDF-')throw Error('文件不是完整的 PDF');
-    let pdf;const images=[],layout=[],plain=[],warnings=['PDF 页面是阅读预览，提取文字的顺序请核对；原始 PDF 字节完整保留。'];
+    let pdf;const generation=noteImportGeneration,images=[],layout=[],plain=[],unread=[],warnings=['保留原始 PDF 和逐页图像。文字层与 OCR 是检索副本，可以对照页面核对。'];
     try{
       pdf=await pdfjsLib.getDocument({data:bytes.slice(),cMapUrl:'cmaps/',cMapPacked:true,isEvalSupported:false}).promise;
-      if(!pdf.numPages||pdf.numPages>50)throw Error('文档导入一次支持最多 50 页 PDF，超限不会截取前几页');
-      let imageBytes=0;
+      if(!pdf.numPages)throw Error('PDF 没有可读取的页面');
       for(let index=1;index<=pdf.numPages;index++){
-        const page=await pdf.getPage(index),content=await page.getTextContent(),text=content.items.map(item=>item.str+(item.hasEOL?'\n':' ')).join('');plain.push(text);
-        const base=page.getViewport({scale:1}),scale=Math.min(1.5,Math.sqrt(2000000/(base.width*base.height))),viewport=page.getViewport({scale}),canvas=document.createElement('canvas');
+        if(generation!==noteImportGeneration)throw Error('已取消文档导入');
+        documentImportProgress='正在处理 PDF 第 '+index+' / '+pdf.numPages+' 页';if(panel?.kind==='note-import')render(false);
+        const page=await pdf.getPage(index),content=await page.getTextContent();let text=content.items.map(item=>item.str+(item.hasEOL?'\n':' ')).join('');
+        const base=page.getViewport({scale:1}),scale=Math.min(1.75,Math.sqrt(2000000/(base.width*base.height))),viewport=page.getViewport({scale}),canvas=document.createElement('canvas');
         canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
-        try{await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('PDF 页面预览失败');const data=new Uint8Array(await blob.arrayBuffer());imageBytes+=data.length;if(imageBytes>DOCUMENT_IMAGE_BUDGET)throw Error('PDF 页面预览总量超过 64 MiB，未裁剪或导入');const picture=await documentPicture(data,'image/png');images.push({...picture,width:canvas.width,height:canvas.height});layout.push({kind:'text',text:'第 '+index+' 页'},{kind:'break'},{kind:'image',index:images.length-1},{kind:'break'})}finally{canvas.width=0;canvas.height=0;page.cleanup()}
-        if(plain.join('\n\n').length>50000)throw Error('PDF 提取文字超过 50000 字符，未截断导入');await archiveYield();
+        try{
+          await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+          if(text.replace(/\s/g,'').length<20&&window.XixuOCR?.recognizeDocumentPage){
+            try{const scan=await recognizePdfPage(window.XixuOCR,canvas.toDataURL('image/png'),index);if(String(scan.value||'').trim())text=String(scan.value)}catch(_){unread.push(index)}
+          }
+          if(!text.trim()&&!unread.includes(index))unread.push(index);
+          plain.push(text);
+          const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('PDF 页面预览失败');
+          const data=new Uint8Array(await blob.arrayBuffer()),picture=await documentPicture(data,'image/png');
+          // Store a page before processing the next one; do not retain all rasters in RAM.
+          await archiveStore(data,picture.hash);delete picture.originalBytes;
+          images.push({...picture,width:canvas.width,height:canvas.height});layout.push({kind:'text',text:'第 '+index+' 页'},{kind:'break'},{kind:'image',index:images.length-1},{kind:'break'});
+        }finally{canvas.width=0;canvas.height=0;page.cleanup()}
+        await archiveYield();
       }
-      if(!plain.join('').trim())warnings.push('这是无可提取文字的 PDF；已保存原件与全部页面预览，尚不能按图片中的文字检索。');
+      if(unread.length)warnings.push('第 '+unread.slice(0,20).join('、')+(unread.length>20?' 等 '+unread.length+' 页':' 页')+'尚未获得可靠文字；原件和页面仍保留。手机 App 可使用本机 OCR，识别文字请对照页面核对。');
       return {text:plain.join('\n\n'),images,layout,warnings};
-    }catch(error){throw Error(error.name==='PasswordException'?'暂不支持加密 PDF，请保留原件':error.message||'PDF 读取失败')}finally{await pdf?.destroy()}
+    }catch(error){throw Error(error.name==='PasswordException'?'加密 PDF 以原件归档；解锁后可重新提取文字':error.message||'PDF 读取失败')}finally{documentImportProgress='';await pdf?.destroy()}
+  }
+  async function documentOriginalOnly(source,fileName,reason){
+    const saved=await archiveStoreSource(source),format=String(fileName).split('.').pop().toLowerCase();
+    return {title:titleFromFile(fileName,''),text:'',images:[],archive:{version:2,format:DOCUMENT_FORMATS.includes(format)?format:'bin',fileName,fileBytes:saved.bytes,originalHash:saved.hash,textHash:await archiveSha(new Uint8Array()),images:[],layout:[],projectionStatus:'original-only',warnings:[String(reason).slice(0,480)+'。已完整归档原文件，可核对哈希并原样导出；正文和内嵌图片尚未展开。']}};
+  }
+  function documentTextParts(text){
+    const parts=[];for(let offset=0;offset<text.length;){let end=Math.min(text.length,offset+50000);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;parts.push(text.slice(offset,end));offset=end}return parts.length?parts:[''];
   }
   async function parseArchiveDocument(bytes,fileName){
     const format=String(fileName).split('.').pop().toLowerCase();
@@ -114,7 +135,7 @@
     else if(format==='pdf')parsed=await documentPdf(bytes);
     else if(['png','jpg','jpeg','webp'].includes(format))parsed={text:'',images:[await documentPicture(bytes,documentMime(fileName))],layout:[{kind:'image',index:0}]};
     else{const text=documentText(bytes);parsed={text,images:[],layout:[{kind:'text',text}]}}
-    if((!parsed.text.trim()&&!parsed.images.length)||parsed.text.length>50000||parsed.layout.length>10000||parsed.images.length>500||parsed.images.reduce((sum,picture)=>sum+picture.bytes,0)>DOCUMENT_IMAGE_BUDGET)throw Error('内容为空或超出文档导入范围，未压缩、裁剪或导入');
+    if((!parsed.text.trim()&&!parsed.images.length)||parsed.layout.length>10000||parsed.images.length>500||format!=='pdf'&&parsed.images.reduce((sum,picture)=>sum+picture.bytes,0)>DOCUMENT_IMAGE_BUDGET)throw Error('内容为空或超出文档导入范围，未压缩、裁剪或导入');
     return {...parsed,title:parsed.title||titleFromFile(fileName,parsed.text),fileName,format,warnings:parsed.warnings||[],fileBytes:bytes.length,originalHash:await archiveSha(bytes),textHash:await archiveSha(new TextEncoder().encode(parsed.text))};
   }
   async function archiveDocumentProjection(parsed,bytes){

@@ -33,7 +33,7 @@
       id:[source.document_id,source.version,source.start,source.end].join(':'),
       documentId:'computer:'+source.document_id,chunkId:'computer:'+source.id,title:String(source.title||'电脑资料'),
       text:String(source.text||'').slice(0,900),recordType:'external',kind:'电脑资料',action:'knowledge-source',
-      chunkStart:source.start,chunkEnd:source.end,sourceExcerpt:true,score:source.score||0,reasons:['电脑知识库检索']
+      metadata:source.metadata||{},chunkStart:source.start,chunkEnd:source.end,sourceExcerpt:true,score:source.score||0,reasons:['电脑知识库检索']
     }));
   }
   function knowledgeSettingsHtml(){

@@ -109,6 +109,8 @@ class Retriever:
         self.store, self.cache, self.enabled, self.backend = store, cache, enabled, backend
         self.index = vector_store or (MilvusStore() if backend == 'milvus' else ChromaStore(store.path.parent / 'chroma'))
         self.model, self.last_error, self.lock = model, '', threading.RLock()
+        from .reranking import Reranker
+        self.reranker = Reranker()
         with store.connection() as db:
             # State is scoped to the actual backend, not a global indexed bit:
             # switching Chroma/Milvus cannot silently skip a new empty index.
@@ -165,7 +167,7 @@ class Retriever:
                 return {'enabled': True, 'backend': self.backend, 'error': self.last_error}
 
     def search(self, query, limit=5):
-        from .intelligence import expand_query, rerank, temporal_evidence
+        from .intelligence import expand_query, temporal_evidence
         lexical, dense, semantic_ok = self.store.lexical(expand_query(query)), [], False
         if self.enabled:
             with self.lock:
@@ -192,15 +194,15 @@ class Retriever:
             candidate_docs[row['document_id']] = candidate_docs.get(row['document_id'], 0) + 1
             if len(candidate_ids) == 20:
                 break
-        ranked = rerank(query, [rows[key] for key in candidate_ids if key in rows], scores, limit)
+        ranked, ranking_state = self.reranker.rank(query, [rows[key] for key in candidate_ids if key in rows], scores, limit)
         selected = []
         for row in ranked:
             metadata = json.loads(row['metadata'])
             public_metadata = {key: metadata[key] for key in ('source_type', 'sender_id', 'sender_name', 'conversation_id', 'conversation_name', 'sent_at', 'sent_at_local', 'sent_at_unix', 'is_group', 'original_hash', 'note_id', 'source_created_at', 'source_updated_at', 'source_imported_at') if key in metadata}
             selected.append({**row, 'score': row['rerank_score'], 'metadata': public_metadata,
                              'source_type': metadata.get('source_type', 'file'), 'record_type': 'external'})
-        return {'results': selected, 'strategy': 'rrf-lightweight-rerank' if semantic_ok else 'lexical-lightweight-rerank',
-                'ranking': {'fused_candidates': len(candidate_ids), 'selected': len(selected), 'reranker': 'token-coverage-title-v1', 'scores_are_probabilities': False},
+        return {'results': selected, 'strategy': ('rrf-' if semantic_ok else 'lexical-') + ranking_state['backend'],
+                'ranking': {'fused_candidates': len(candidate_ids), 'selected': len(selected), 'reranker': ranking_state['backend'], 'scores_are_probabilities': False, 'configured': ranking_state['configured']},
                 'temporal': temporal_evidence(selected),
-                'semantic_available': semantic_ok, 'backend': self.backend, 'warning': self.last_error,
+                'semantic_available': semantic_ok, 'backend': self.backend, 'warning': ' '.join(filter(None, [self.last_error, ranking_state['warning']])),
                 'answer_generated': False}

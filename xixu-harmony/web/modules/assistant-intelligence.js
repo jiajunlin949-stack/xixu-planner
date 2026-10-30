@@ -82,10 +82,46 @@
     const groups=new Map();for(const claim of claims){const key=assistantTopic(claim.subject)+'|'+claim.field;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(claim)}
     return [...groups.values()].filter(group=>new Set(group.flatMap(item=>item.dates)).size>1).map(group=>({subject:group[0].subject,claims:group.slice().sort((a,b)=>(Date.parse(a.at)||0)-(Date.parse(b.at)||0)),status:group.length===1&&group[0].changed&&group[0].dates.length>1?'explicit_revision_in_source':'needs_scope_confirmation'}));
   }
+  let temporalReviewGroups=null;
+  function temporalFingerprint(claim){return assistantStable({source:claim.ref.documentId||claim.ref.id,version:claim.ref.baseVersionHash||claim.ref.id,at:claim.at,field:claim.field,evidence:claim.evidence})}
+  function temporalResolution(group){
+    const fingerprints=group.claims.map(temporalFingerprint).sort();
+    return (assistantState().temporalResolutions||[]).slice().reverse().find(item=>item.subject===group.subject&&item.field===group.claims[0].field&&assistantStable(item.fingerprints)===assistantStable(fingerprints));
+  }
   function assistantTemporalAnswer(query,refs){
     if(!/后来|改了|改期|延期|最新|什么时候|冲突|以.*为准/.test(query))return null;
     const groups=assistantTemporalClaims(refs);if(!groups.length)return null;
-    return {answer:groups.map(group=>'“'+group.subject+'”有不同通知内容：\n'+group.claims.map(claim=>'• '+(claim.at||'原始时间未知')+'：'+claim.evidence).join('\n')+(group.status==='explicit_revision_in_source'?'\n这条通知明确写了从“'+group.claims[0].dates[0]+'”改为“'+group.claims[0].dates.at(-1)+'”；出处已保留，尚未替你改日程。':'\n已保留新旧来源；仅凭片段无法确认是否同一批次、同一次考试或同一份作业，请展开原文核对，尚未替你改日程。')).join('\n\n'),refs,action:{type:'none'},source:'local',tool:'temporal_sources'};
+    const unresolved=groups.some(group=>!temporalResolution(group));
+    return {answer:groups.map(group=>{
+      const decision=temporalResolution(group),sources=group.claims.map(claim=>'• '+(claim.at||'原始时间未知')+'：'+claim.evidence).join('\n');
+      if(decision)return '“'+group.subject+'”当前按你核对的“'+decision.scope+'”处理：'+decision.value+'。\n核对时间：'+decision.at+'；保留的新旧出处：\n'+sources+'\n来源内容若变化，会重新请求核对。尚未替你改日程。';
+      return '“'+group.subject+'”有不同通知内容：\n'+sources+(group.status==='explicit_revision_in_source'?'\n本条明确写了从“'+group.claims[0].dates[0]+'”改为“'+group.claims[0].dates.at(-1)+'”。':'\n请核对是否同一次事项、班级或批次，并选择哪条为准。')+'尚未替你修改日程。';
+    }).join('\n\n'),refs,action:unresolved?{type:'review_temporal',groups}:{type:'none'},source:'local',tool:'temporal_sources'};
+  }
+  function assistantReviewTemporal(){
+    const groups=agentDraft?.action?.type==='review_temporal'?agentDraft.action.groups:null;if(!groups?.length)throw Error('请先向助手询问“这件事后来改了吗”，再核对这次的通知来源');temporalReviewGroups=groups;
+    assistantShowSheet('核对通知变化','<p>为每组通知说明适用的同一事项、班级或批次，再选择当前采用的值。所有旧通知保留，资料或版本变化后会重新核对。</p><form id="xixu-temporal-review" class="tide-form">'+groups.map((group,index)=>'<fieldset><legend>'+esc(group.subject)+'</legend><label class="tide-field">适用事项／批次<input name="scope-'+index+'" maxlength="80" required placeholder="例如：本学期软件工程一班期末"></label><label class="tide-field">当前以哪条为准<select name="choice-'+index+'">'+group.claims.flatMap((claim,claimIndex)=>claim.dates.map((value,valueIndex)=>'<option value="'+esc(JSON.stringify([claimIndex,valueIndex]))+'">'+esc(value+' · '+(claim.at||'原始时间未知')+' · '+claim.ref.title)+'</option>')).join('')+'</select></label>'+group.claims.map(claim=>'<blockquote>'+esc(claim.evidence)+'</blockquote>').join('')+'</fieldset>').join('')+'<label class="xixu-check-line"><input type="checkbox" name="verified" required>我已核对这些来源和适用批次，同意保存所选依据</label><button class="tide-primary">保存核对依据</button></form>','temporal-review');
+  }
+  async function temporalVerifySource(claim){
+    const ref=claim.ref;
+    if(ref.recordType==='external'){
+      if(!knowledgeEnabled())throw Error('请先连接原电脑以核对通知版本');const [document_id,version,start,end]=String(ref.id).split(':');await knowledgeCall('excerpt',{document_id,version,start:Number(start),end:Number(end)});return;
+    }
+    const record=ref.recordType==='note'?notes.find(item=>item.id===ref.id):ref.recordType==='task'?tasks.find(item=>item.id===ref.id):ref.recordType==='course'?courses.find(item=>item.id===ref.id):ref.recordType==='scratch'?scratchEntries.find(item=>item.id===ref.id):null;
+    if(!record||!ref.baseVersion||assistantStable(record)!==ref.baseVersion)throw Error('通知原文已变化，请重新查询后核对');
+  }
+  async function temporalSaveReview(form){
+    const groups=temporalReviewGroups,token=assistantSheet?.token;if(!groups?.length)throw Error('本次核对已失效');const data=new FormData(form);if(!data.has('verified'))throw Error('请先核对适用批次');
+    const decisions=[];for(let index=0;index<groups.length;index++){
+      const group=groups[index],scope=String(data.get('scope-'+index)||'').trim(),choice=JSON.parse(String(data.get('choice-'+index)||'null'));
+      if(!scope||scope.length>80||!Array.isArray(choice)||choice.length!==2)throw Error('请完整核对通知和适用批次');
+      const claim=group.claims[choice[0]],value=claim?.dates[choice[1]];if(typeof value!=='string')throw Error('所选通知已经失效');
+      for(const source of group.claims)await temporalVerifySource(source);
+      decisions.push({id:uid(),subject:group.subject,field:claim.field,scope,value,at:new Date().toISOString(),fingerprints:group.claims.map(temporalFingerprint).sort(),chosen:temporalFingerprint(claim),evidence:claim.evidence,sourceAt:claim.at,sourceTitle:claim.ref.title});
+    }
+    if(temporalReviewGroups!==groups||assistantSheet?.kind!=='temporal-review'||assistantSheet?.token!==token)throw Error('已取消核对，本次没有保存');
+    const state=assistantState(),previous=state.temporalResolutions||[];state.temporalResolutions=[...previous,...decisions];if(persist()===false){state.temporalResolutions=previous;throw Error('核对依据未保存')}
+    temporalReviewGroups=null;assistantCloseSheet();notify('通知依据已保存；再次提问可按所核对批次追溯新旧变化');
   }
   const semanticSearchBeforeAssistant=semanticAgentSearch;
   Object.assign(agentRagSynonyms,{开题:'开题报告 提交',汇报:'presentation 展示',改期:'延期 调整 改为'});
@@ -105,7 +141,9 @@
       if(assistantSavedDone)for(const task of tasks){if(assistantSavedDone.has(task.id)&&assistantSavedDone.get(task.id)!==Boolean(task.done)){const entries=state.taskProgress[task.id]||(state.taskProgress[task.id]=[]);entries.push({at:new Date().toISOString(),kind:task.done?'marked_done':'reopened'});if(entries.length>1000)entries.splice(0,entries.length-1000)}}
       const sources=assistantSourceRecords(),current=new Map(sources.map(item=>[item.id,{at:item.at,text:item.text}])),changed=assistantSavedSources?sources.filter(item=>{const old=assistantSavedSources.get(item.id);return !old||old.at!==item.at||old.text!==item.text}):[];
       persistBeforeIntelligence();
-      if(lastSaved===JSON.stringify(snapshot())){assistantSavedDone=done;assistantSavedSources=current;if(changed.length)setTimeout(()=>assistantMineRecords(changed),0)}
+      const saved=lastSaved===JSON.stringify(snapshot());
+      if(saved){assistantSavedDone=done;assistantSavedSources=current;if(changed.length)setTimeout(()=>assistantMineRecords(changed),0)}
+      return saved;
     }finally{assistantPersistBusy=false}
   };
   function assistantMailboxDue(task){return validCalendarDate(task.date)?Date.parse(task.date+'T'+(assistantClock(task.time)?task.time:'23:59')+':00+08:00'):NaN}
@@ -154,7 +192,8 @@
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-action]');if(!button)return;
     const action=button.dataset.action;
-    if(action==='assistant-suggestions')assistantShowCommitments();
+    if(action==='assistant-temporal-review')try{assistantReviewTemporal()}catch(error){notify(error.message)}
+    else if(action==='assistant-suggestions')assistantShowCommitments();
     else if(action==='assistant-mine'){if(!assistantMiningBusy)assistantMineRecords(assistantSourceRecords())}
     else if(action==='assistant-suggestion-dismiss'){const item=assistantState().commitments.find(value=>value.id===button.dataset.id);if(item){item.status='dismissed';persist();assistantShowCommitments()}}
     else if(action==='assistant-suggestion-review')assistantReviewSuggestion(button.dataset.id).catch(error=>notify(error.message));
@@ -164,7 +203,7 @@
   },true);
   root.addEventListener('change',event=>{const id=event.target.dataset?.mailboxTask;if(!id)return;const box=assistantState().mailbox,previous=box.enrolled[id];box.enrolled[id]={at:previous?.at||new Date().toISOString(),muted:!event.target.checked};persist()});
   root.addEventListener('submit',async event=>{
-    const form=event.target;if(!['xixu-suggestion-form','xixu-mailbox-settings','xixu-letter-reply','xixu-letter-review'].includes(form.id))return;event.preventDefault();event.stopImmediatePropagation();const data=new FormData(form),box=assistantState().mailbox;
+    const form=event.target;if(form.id==='xixu-temporal-review'){event.preventDefault();event.stopImmediatePropagation();const button=form.querySelector('button');button.disabled=true;temporalSaveReview(form).catch(error=>{notify(error.message);if(button.isConnected)button.disabled=false});return}if(!['xixu-suggestion-form','xixu-mailbox-settings','xixu-letter-reply','xixu-letter-review'].includes(form.id))return;event.preventDefault();event.stopImmediatePropagation();const data=new FormData(form),box=assistantState().mailbox;
     try{
       if(form.id==='xixu-suggestion-form'){
         const candidate=assistantState().commitments.find(item=>item.id===form.dataset.id);await assistantVerifyCommitment(candidate);

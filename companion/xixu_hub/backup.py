@@ -29,15 +29,19 @@ def backup(store, originals, destination):
         manifest = {'format': 'xixu-companion-backup', 'version': 1, 'documents': rows, 'originals': []}
         with ZipFile(temporary, 'w', compression=ZIP_STORED, allowZip64=True) as archive:
             for key in sorted(assets):
-                content = originals.read(key)
-                archive.writestr('originals/' + key, content)
-                manifest['originals'].append({'sha256': key, 'bytes': len(content)})
+                size = originals.verify(key)
+                archive.write(originals.path(key), 'originals/' + key)
+                manifest['originals'].append({'sha256': key, 'bytes': size})
             archive.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2).encode())
         # Reopen and independently check manifest/bytes before publishing.
         with ZipFile(temporary) as archive:
             for item in manifest['originals']:
-                content = archive.read('originals/' + item['sha256'])
-                if len(content) != item['bytes'] or hashlib.sha256(content).hexdigest() != item['sha256']:
+                digest, size = hashlib.sha256(), 0
+                with archive.open('originals/' + item['sha256']) as stream:
+                    while content := stream.read(256 * 1024):
+                        size += len(content)
+                        digest.update(content)
+                if size != item['bytes'] or digest.hexdigest() != item['sha256']:
                     raise ValueError('备份原件校验失败，未发布备份文件。')
         # Same-directory hard-link publication is atomic and refuses an existing
         # destination; a failed write never leaves a completed-looking backup.

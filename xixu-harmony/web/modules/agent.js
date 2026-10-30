@@ -264,6 +264,8 @@ function parseClassPeriods(value){
   }
   function agentActionHtml(action){
     if(!action||action.type==='none')return '';
+    if(action.type==='review_temporal')return '<div class="xixu-agent-action"><button class="tide-secondary" data-action="assistant-temporal-review">核对哪条通知为准</button></div>';
+    if(action.type==='search_web')return '<div class="xixu-agent-action"><strong>'+esc(action.query)+'</strong><button class="tide-secondary" data-action="assistant-start-web" data-query="'+esc(action.query)+'">核对后联网搜索</button></div>';
     if(action.type==='swap_schedule'){
       return '<div class="xixu-agent-action xixu-reschedule-preview"><span>'+icon('calendar-sync')+'互换课程</span><strong>'+esc(({全天:'全天',上午:'上午',下午:'下午',晚上:'晚上',指定节次:'指定节次'})[action.scopeLabel]||action.scopeLabel)+' · '+action.courseNames.length+' 门课</strong><div class="xixu-agent-edit-grid">'+agentEditField('原日期','firstDate',action.firstDate,'date')+agentEditField('节次','firstPeriods',agentPeriodValue(action.firstPeriods),'text','inputmode="numeric"')+agentEditField('新日期','secondDate',action.secondDate,'date')+agentEditField('节次','secondPeriods',agentPeriodValue(action.secondPeriods),'text','inputmode="numeric"')+'</div><small>'+esc(action.courseNames.join('、'))+'。只会调整这两个日期。</small><div class="tide-detail-actions"><button class="tide-secondary" data-action="agent-dismiss">暂不处理</button><button class="tide-primary" data-action="agent-confirm">确认互换</button></div></div>';
     }
@@ -307,7 +309,7 @@ function parseClassPeriods(value){
   function agentRefsHtml(refs){
     const unique=[...new Map((refs||[]).map(ref=>[ref.documentId||ref.sourceId||(ref.recordType||ref.kind)+':'+ref.id,ref])).values()];
     if(!unique.length)return '';
-    return '<details class="xixu-agent-refs"><summary>'+icon('book-open')+'本次检索资料 · '+unique.length+'<span>'+icon('chevron-down')+'</span></summary><div>'+unique.map(ref=>'<div class="xixu-agent-ref"><button data-action="'+esc(ref.action)+'" data-id="'+esc(ref.id)+'" aria-label="打开原文：'+esc(ref.title)+'"><small>'+esc(ref.recordType==='course'||ref.kind==='课程'?'课程':ref.recordType==='scratch'||ref.kind==='碎片'?'碎片':memoryCategoryLabel(ref.kind))+'</small><span>'+esc(ref.title)+'</span>'+icon('arrow-up-right')+'</button>'+(ref.text?'<p aria-label="检索片段" title="'+(ref.partial||ref.sourceExcerpt?'这是检索片段，完整内容请打开原文':'本次检索文本')+'">'+esc(ref.text)+'</p>':'')+'</div>').join('')+'</div></details>';
+    return '<details class="xixu-agent-refs"><summary>'+icon('book-open')+'本次检索资料 · '+unique.length+'<span>'+icon('chevron-down')+'</span></summary><div>'+unique.map(ref=>'<div class="xixu-agent-ref"><button data-action="'+esc(ref.action)+'" data-id="'+esc(ref.id)+'" data-url="'+esc(ref.url||'')+'" aria-label="打开原文：'+esc(ref.title)+'"><small>'+esc(ref.recordType==='web'?'网页':ref.recordType==='course'||ref.kind==='课程'?'课程':ref.recordType==='scratch'||ref.kind==='碎片'?'碎片':memoryCategoryLabel(ref.kind))+'</small><span>'+esc(ref.title)+'</span>'+icon('arrow-up-right')+'</button>'+(ref.text?'<p aria-label="检索片段" title="'+(ref.partial||ref.sourceExcerpt?'这是检索片段，完整内容请打开原文':'本次检索文本')+'">'+esc(ref.text)+'</p>':'')+'</div>').join('')+'</div></details>';
   }
   function renderAgent(){
     agentConversationMetadata();
@@ -334,7 +336,7 @@ function parseClassPeriods(value){
     const retrievalRefs=(result.refs||[]).slice(0,6).map(ref=>{
       let text=String(ref.text||'').slice(0,900);if(/[\uD800-\uDBFF]$/.test(text))text=text.slice(0,-1);
       const excerptStart=Number(ref.chunkStart||0),sourceEnd=Number(ref.chunkEnd)||excerptStart+text.length;
-      return {...Object.fromEntries(['documentId','chunkId','id','title','action','kind','recordType','date'].map(key=>[key,String(ref[key]||'').slice(0,200)])),sourceId:String(ref.sourceId||ref.chunkId||'').slice(0,200),text,excerptStart,excerptEnd:Math.min(sourceEnd,excerptStart+text.length),partial:Boolean(ref.sourceExcerpt||ref.truncated||String(ref.text||'').length>text.length)};
+      return {...Object.fromEntries(['documentId','chunkId','id','title','action','kind','recordType','date'].map(key=>[key,String(ref[key]||'').slice(0,200)])),url:String(ref.url||'').slice(0,4096),sourceId:String(ref.sourceId||ref.chunkId||'').slice(0,200),text,excerptStart,excerptEnd:Math.min(sourceEnd,excerptStart+text.length),partial:Boolean(ref.sourceExcerpt||ref.truncated||String(ref.text||'').length>text.length)};
     });
     agentHistory.splice(index+1,0,{id:uid(),conversationId,role:'assistant',text:result.answer,source:result.source||'local',createdAt:now,retrievalRefs});
     agentConversationResults.set(conversationId,result);if(activeConversationId()===conversationId)agentDraft=result;

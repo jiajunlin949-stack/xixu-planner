@@ -228,18 +228,19 @@
   }
   const pdfOcrWaiters=new Map();
   window.XixuReceivePdfOCR=(ok,body,pageNumber)=>{
-    const key=Number(pageNumber),waiter=pdfOcrWaiters.get(key);if(!waiter)return;
+    const key=String(pageNumber),waiter=pdfOcrWaiters.get(key);if(!waiter)return;
     pdfOcrWaiters.delete(key);clearTimeout(waiter.timer);
-    if(!ok){waiter.reject(Error(body||('第 '+key+' 页无法识别。')));return}
-    try{waiter.resolve(JSON.parse(body))}catch(_){waiter.reject(Error('第 '+key+' 页的识别结果无法读取。'))}
+    if(!ok){waiter.reject(Error(body||('第 '+waiter.pageNumber+' 页无法识别。')));return}
+    try{waiter.resolve(JSON.parse(body))}catch(_){waiter.reject(Error('第 '+waiter.pageNumber+' 页的识别结果无法读取。'))}
   };
   function recognizePdfPage(bridge,dataUrl,pageNumber){
+    const requestId='doc_'+uid().replace(/[^A-Za-z0-9_-]/g,'');
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{pdfOcrWaiters.delete(pageNumber);reject(Error('第 '+pageNumber+' 页识别超时，请重试。'))},65000);
-      pdfOcrWaiters.set(pageNumber,{resolve,reject,timer});
-      try{Promise.resolve(bridge.recognizeDocumentPage(dataUrl,String(pageNumber))).then(started=>{if(started)return;clearTimeout(timer);pdfOcrWaiters.delete(pageNumber);reject(Error('第 '+pageNumber+' 页未送入识别服务。'))}).catch(error=>{clearTimeout(timer);pdfOcrWaiters.delete(pageNumber);reject(error)})}
-      catch(error){clearTimeout(timer);pdfOcrWaiters.delete(pageNumber);reject(error)}
-    })
+      const fail=error=>{const waiter=pdfOcrWaiters.get(requestId);if(!waiter)return;clearTimeout(waiter.timer);pdfOcrWaiters.delete(requestId);reject(error)};
+      const timer=setTimeout(()=>fail(Error('第 '+pageNumber+' 页识别超时，请重试。')),65000);
+      pdfOcrWaiters.set(requestId,{resolve,reject,timer,pageNumber});
+      try{Promise.resolve(bridge.recognizeDocumentPage(dataUrl,requestId)).then(started=>{if(!started)fail(Error('第 '+pageNumber+' 页未送入识别服务。'))},fail)}catch(error){fail(error)}
+    });
   }
   function pdfWeeks(value){
     const result=new Set(),source=String(value||'').replace(/[，、]/g,',').replace(/[–—至]/g,'-');
