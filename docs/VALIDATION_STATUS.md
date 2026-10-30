@@ -40,4 +40,3 @@ npm run ci
 资料入口保持手动选择与确认；不自动登录、解密账号库、监听文件夹或采集全部附件。这是产品范围。所有本轮新路径仍为未运行验收的源码。
 
 其他实现与历史状态见 [综合助手说明](../companion/ASSISTANT_UPGRADE.md)、[项目状态](PROJECT_STATUS_AND_PLAN.md)、[版本记录](../CHANGELOG.md)。
-
