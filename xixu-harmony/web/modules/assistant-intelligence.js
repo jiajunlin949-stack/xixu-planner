@@ -1,6 +1,5 @@
   // Analyze only material already saved by the user. No watchers or account access.
   let assistantMiningGeneration=0,assistantMiningBusy=false;
-  const assistantMiningQueue=new Map();
   const assistantTopic=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/[\s，。；：、,.!！?？:]/g,'');
   const assistantOriginalTime=note=>String(note.sourceUpdatedAt||note.sourceSentAt||note.updatedAt||note.createdAt||'');
   function assistantSourceRecords(){
@@ -25,28 +24,32 @@
   function assistantTaskMatch(candidate){
     const title=assistantTopic(candidate.title);return tasks.find(task=>task.date===candidate.date&&(assistantTopic(task.title)===title||Math.min(title.length,assistantTopic(task.title).length)>=4&&(title.includes(assistantTopic(task.title))||assistantTopic(task.title).includes(title))));
   }
-  async function assistantMineRecords(records){
-    for(const record of records)assistantMiningQueue.set(record.id,record);
-    if(assistantMiningBusy)return;
-    const generation=assistantMiningGeneration,state=assistantState();assistantMiningBusy=true;
-    try{
-      while(assistantMiningQueue.size){
-        const record=assistantMiningQueue.values().next().value;assistantMiningQueue.delete(record.id);
-        if(generation!==assistantMiningGeneration)return;
-        const version=await archiveSha(new TextEncoder().encode(record.text));
-        if(generation!==assistantMiningGeneration)return;
-        if(!assistantSourceRecords().some(item=>item.id===record.id&&item.text===record.text))continue;
-        state.commitments.filter(item=>item.sourceId===record.id&&item.sourceVersion!==version&&item.status==='suggested').forEach(item=>item.status='source_changed');
-        for(const candidate of assistantExtractCommitments(record)){
-          if(state.commitments.some(item=>item.sourceId===record.id&&item.sourceVersion===version&&item.start===candidate.start))continue;
-          if(state.commitments.length>=10000)throw Error('建议档案容量已满，请先完整备份并整理。');
-          const existing=assistantTaskMatch(candidate);state.commitments.push({...candidate,id:uid(),sourceVersion:version,foundAt:new Date().toISOString(),status:existing?'already_recorded':'suggested',matchedTaskId:existing?.id||''});
+  let assistantMiningChain=Promise.resolve();
+  function assistantMineRecords(records,strict=false,alive=()=>true){
+    const owner=agentPreferences,generation=assistantMiningGeneration;
+    const run=async()=>{
+      if(owner!==agentPreferences||generation!==assistantMiningGeneration||!alive())return;
+      assistantMiningBusy=true;
+      try{
+        for(const record of records){
+          const version=await archiveSha(new TextEncoder().encode(record.text));
+          if(owner!==agentPreferences||generation!==assistantMiningGeneration||!alive())return;
+          if(!assistantSourceRecords().some(item=>item.id===record.id&&item.text===record.text))continue;
+          const state=assistantState();
+          state.commitments.filter(item=>item.sourceId===record.id&&item.sourceVersion!==version&&item.status==='suggested').forEach(item=>item.status='source_changed');
+          for(const candidate of assistantExtractCommitments(record)){
+            if(state.commitments.some(item=>item.sourceId===record.id&&item.sourceVersion===version&&item.start===candidate.start))continue;
+            if(state.commitments.length>=10000)throw Error('建议档案容量已满，请先完整备份并整理。');
+            const existing=assistantTaskMatch(candidate);state.commitments.push({...candidate,id:uid(),sourceVersion:version,foundAt:new Date().toISOString(),status:existing?'already_recorded':'suggested',matchedTaskId:existing?.id||''});
+          }
+          if(persist()===false)throw Error('事项建议尚未保存，请检查本机存储');
+          await archiveYield();
         }
-        await archiveYield();
-      }
-      persist();if(assistantSheet?.kind==='commitments')assistantShowCommitments();
-    }catch(error){notify(error.message||'事项建议未整理完成，原记录仍保留')}
-    finally{assistantMiningBusy=false}
+        if(assistantSheet?.kind==='commitments')assistantShowCommitments();
+      }finally{assistantMiningBusy=false}
+    };
+    const pending=assistantMiningChain.then(run);assistantMiningChain=pending.catch(()=>{});
+    return strict?pending:pending.catch(error=>notify(error.message||'事项建议未整理完成，原记录仍保留'));
   }
   function assistantShowCommitments(){
     const state=assistantState(),pending=state.commitments.filter(item=>item.status==='suggested'&&!assistantTaskMatch(item));
@@ -133,16 +136,18 @@
   const persistBeforeIntelligence=persist;
   const loadBeforeIntelligence=loadSaved;
   loadSaved=function(){loadBeforeIntelligence();assistantSavedSources=new Map(assistantSourceRecords().map(item=>[item.id,{at:item.at,text:item.text}]));assistantSavedDone=new Map(tasks.map(item=>[item.id,Boolean(item.done)]))};
-  persist=function(){
-    if(assistantPersistBusy)return persistBeforeIntelligence();
+  persist=function(options={}){
+    // Agent history/queue/approval metadata cannot change task completion or
+    // source text. Skip the business-data scans on this explicit internal path.
+    if(options.scope==='assistant'||assistantPersistBusy)return persistBeforeIntelligence(options);
     assistantPersistBusy=true;
     try{
-      const state=assistantState(),done=new Map(tasks.map(task=>[task.id,Boolean(task.done)]));
-      if(assistantSavedDone)for(const task of tasks){if(assistantSavedDone.has(task.id)&&assistantSavedDone.get(task.id)!==Boolean(task.done)){const entries=state.taskProgress[task.id]||(state.taskProgress[task.id]=[]);entries.push({at:new Date().toISOString(),kind:task.done?'marked_done':'reopened'});if(entries.length>1000)entries.splice(0,entries.length-1000)}}
+      const state=assistantState(),done=new Map(tasks.map(task=>[task.id,Boolean(task.done)])),previousProgress=new Map();
+      if(assistantSavedDone)for(const task of tasks){if(assistantSavedDone.has(task.id)&&assistantSavedDone.get(task.id)!==Boolean(task.done)){previousProgress.set(task.id,state.taskProgress[task.id]?state.taskProgress[task.id].slice():null);const entries=state.taskProgress[task.id]||(state.taskProgress[task.id]=[]);entries.push({at:new Date().toISOString(),kind:task.done?'marked_done':'reopened'});if(entries.length>1000)entries.splice(0,entries.length-1000)}}
       const sources=assistantSourceRecords(),current=new Map(sources.map(item=>[item.id,{at:item.at,text:item.text}])),changed=assistantSavedSources?sources.filter(item=>{const old=assistantSavedSources.get(item.id);return !old||old.at!==item.at||old.text!==item.text}):[];
-      persistBeforeIntelligence();
-      const saved=lastSaved===JSON.stringify(snapshot());
-      if(saved){assistantSavedDone=done;assistantSavedSources=current;if(changed.length)setTimeout(()=>assistantMineRecords(changed),0)}
+      const saved=persistBeforeIntelligence(options)===true;
+      if(saved){assistantSavedDone=done;assistantSavedSources=current;if(changed.length)setTimeout(()=>assistantIntakeMaterials(changed).catch(error=>notify(error.message)),0)}
+      else for(const [id,entries] of previousProgress){if(entries)state.taskProgress[id]=entries;else delete state.taskProgress[id]}
       return saved;
     }finally{assistantPersistBusy=false}
   };
@@ -184,8 +189,7 @@
     assistantShowSheet('一封给现在的信','<article class="xixu-letter"><p class="xixu-letter-body">'+esc(letter.body)+'</p>'+(changed?'<p role="status">事项后来改过：这封信保留寄出时的记录。现在截止 '+esc(task.date+' '+task.time)+'。</p>':'')+'<details><summary>核对事实出处</summary><ul>'+letter.facts.map(fact=>'<li>'+esc(fact.kind)+' · '+esc(fact.value)+' · '+esc(fact.id)+'</li>').join('')+'</ul></details>'+(letter.reply?'<blockquote>你封存的回信：'+esc(letter.reply)+'<br><time>'+esc(letter.replyAt)+'</time></blockquote>':'<form id="xixu-letter-reply" data-id="'+esc(id)+'" class="tide-form"><label class="tide-field">给之后的自己回一句话<textarea name="reply" maxlength="1000" required></textarea></label><button class="tide-primary">封存回信</button><p>回信不会自动生成任务。</p></form>')+(due?'<section><h3>到期对账</h3><p>现在的记录：'+(task.done?'已标记完成':'尚未标记完成')+'。实际完成与睡眠情况由你补充。</p>'+(letter.review?'<p>'+esc(letter.review.receipt||'这次实际情况以你的对账为准。')+'</p><blockquote>'+esc(letter.review.text)+'</blockquote>':'<form id="xixu-letter-review" data-id="'+esc(id)+'" class="tide-form"><label class="tide-field">这次实际怎么样？<textarea name="truth" maxlength="1000" required></textarea></label><label class="xixu-check-line"><input type="checkbox" name="reuse">允许在同类事项来信中原样引用这句话</label><button class="tide-secondary">封存这次对账</button></form>')+'</section>':'')+'</article>','letter');
   }
   const settingsBeforeIntelligence=renderSettings;
-  function assistantMailboxTick(){if(document.hidden||storageBlocked)return;const count=assistantState().mailbox.letters.length;assistantMailboxGenerate();if(assistantState().mailbox.letters.length!==count){persist();if(!panel)render(false)}}
-  setTimeout(assistantMailboxTick,0);setInterval(assistantMailboxTick,60000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)assistantMailboxTick()});
+
   renderSettings=function(){return settingsBeforeIntelligence()+'<div class="tide-section"><h2>记录里的线索</h2></div><div class="xixu-setting-actions"><button data-action="assistant-suggestions">'+icon('scan-search')+'<span>待核对的事项</span>'+icon('chevron-right')+'</button><button data-action="assistant-mailbox">'+icon('mail')+'<span>时间信箱</span>'+icon('chevron-right')+'</button></div>'};
   const todayBeforeIntelligence=renderToday;
   renderToday=function(){const box=assistantState().mailbox,unread=box.letters.filter(item=>!item.openedAt).length,pending=assistantState().commitments.filter(item=>item.status==='suggested'&&!assistantTaskMatch(item)).length;return todayBeforeIntelligence()+(unread||pending?'<div class="xixu-quiet-entries">'+(unread?'<button data-action="assistant-mailbox">'+icon('mail')+'有 '+unread+' 封未拆的信</button>':'')+(pending?'<button data-action="assistant-suggestions">'+icon('scan-search')+pending+' 件事待核对</button>':'')+'</div>':'')};

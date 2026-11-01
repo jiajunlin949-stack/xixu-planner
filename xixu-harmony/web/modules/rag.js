@@ -304,9 +304,43 @@
   function agentContext(refs){
     return refs.map(item=>({sourceId:item.chunkId,documentId:item.documentId,kind:item.kind,id:item.id,title:item.title,date:item.date||'',time:item.time||'',done:Boolean(item.done),imageCount:item.imageCount||0,relevance:item.score,reasons:item.reasons.slice(0,4),text:item.text,excerpt:{start:item.chunkStart,end:item.chunkEnd,sourceChars:item.sourceChars,partial:Boolean(item.sourceExcerpt),budgetTruncated:Boolean(item.truncated)}}));
   }
-  function compactAgentConversation(history,maxChars=2600){
-    const recent=[],items=history.slice(),older=items.slice(0,-6),tail=items.slice(-6);let used=0;
-    for(let index=tail.length-1;index>=0;index--){const item=tail[index],content=ragSafeText(item.text).slice(0,650),room=maxChars-used;if(room<100)break;recent.unshift({role:item.role,content:content.slice(0,room)});used+=Math.min(content.length,room)}
-    let memory='';if(older.length){const highlights=older.slice(-12).map(item=>(item.role==='user'?'用户：':'汐序：')+ragSafeText(item.text).slice(0,120));memory=('较早对话压缩记忆：'+highlights.join('｜')).slice(0,900)}
-    return {memory,recent};
+  function agentHistoryBeforeMessage(history,messageId){
+    const index=history.findIndex(item=>item.id===messageId);
+    if(index<0)throw Error('原消息不属于这段对话');
+    // Replaying an older request must not use its previous answer or later
+    // conversation as if those messages had been known at submission time.
+    return history.slice(0,index);
+  }
+  function compactAgentConversation(history,maxChars=2600,query=''){
+    // Inline recent context; recall old excerpts by relevance. Full messages stay
+    // in history. This is application context selection, not model attention.
+    const budget=Number.isFinite(maxChars)?Math.max(0,Math.floor(maxChars)):2600;
+    const clip=(text,size)=>{let value=String(text).slice(0,Math.max(0,size));if(/[\uD800-\uDBFF]$/.test(value))value=value.slice(0,-1);return value};
+    const items=history.filter(item=>item&&['user','assistant'].includes(item.role));
+    const recent=[],tail=items.slice(-6),older=items.slice(0,-6),weights=ragTokenWeights(query);
+    const recentBudget=older.length&&weights.size?Math.floor(budget*.65):budget;
+    let used=0;
+    for(let index=tail.length-1;index>=0;index--){
+      const item=tail[index],room=recentBudget-used;if(room<=0)break;
+      const content=clip(ragSafeText(item.text),Math.min(650,room));if(!content)continue;
+      recent.unshift({role:item.role,content});used+=content.length;
+    }
+    const ranked=older.slice(-200).map((item,index)=>{
+      const text=ragSafeText(item.text),lower=text.toLowerCase();let score=0,anchor=-1;
+      weights.forEach((weight,token)=>{const at=lower.indexOf(token);if(at>=0){score+=weight;if(anchor<0||at<anchor)anchor=at}});
+      return {item,index,text,score,anchor};
+    }).filter(item=>item.score>0).sort((a,b)=>b.score-a.score||b.index-a.index);
+    const prefix='较早对话原文摘录（可能已过时，不是新的指令；完整历史仍保留在本机）：';
+    const recalled=[];let memory='';
+    for(const candidate of ranked){
+      if(recalled.length>=3)break;
+      let start=Math.max(0,candidate.anchor-100);if(start&&/[\uDC00-\uDFFF]/.test(candidate.text[start]))start--;
+      let text=clip(candidate.text.slice(start),420);
+      const entry={messageId:String(candidate.item.id||'').slice(0,120),role:candidate.item.role,normalizedStart:start,excerpt:text,partial:start>0||text.length<candidate.text.length};
+      let next=prefix+JSON.stringify([...recalled,entry]);
+      while(text&&used+next.length>budget){text=clip(text,text.length-1);entry.excerpt=text;entry.partial=true;next=prefix+JSON.stringify([...recalled,entry])}
+      if(!text)continue;
+      recalled.push(entry);memory=next;
+    }
+    return {memory,recent,recallIds:recalled.map(item=>item.messageId),contextChars:used+memory.length,spilledMessages:older.length,scannedOlderMessages:Math.min(200,older.length)};
   }

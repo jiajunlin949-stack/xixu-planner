@@ -15,7 +15,11 @@
   "routing-policy.js",
   "assistant-core.js",
   "assistant-intelligence.js",
+  "assistant-engine.js",
   "assistant-network.js",
+  "assistant-runtime.js",
+  "assistant-results.js",
+  "assistant-workbench.js",
   "backup-zip.js",
   "full-backup.js",
   "history-checkpoints.js"

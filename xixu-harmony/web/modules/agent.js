@@ -1,9 +1,10 @@
-  let agentPending=false,agentDraft=null,agentImagePending=false,agentRequest=null,agentImageConversationId='';
+  let agentDraft=null,agentImagePending=false,agentImageConversationId='';
   let agentDrawerOpen=false,agentRenameId='',agentDeleteConversationId='',agentWorkspaceInitialized=false;
+  const agentRequests=new Map();
   const agentConversationResults=new Map(),agentConversationScroll=new Map(),agentVisibleMessages=new Map();
   const AGENT_DRAFT_MAX_CHARS=128000,AGENT_MESSAGE_MAX_CHARS=16000;
   const agentMobile=()=>matchMedia('(max-width:759px)').matches;
-  const agentConversationBusy=id=>agentRequest?.conversationId===id||agentImagePending&&agentImageConversationId===id;
+  const agentConversationBusy=id=>agentRequests.has(id)||Boolean(typeof assistantEngine!=='undefined'&&assistantEngine.state().tickets.some(item=>item.conversationId===id&&ASSISTANT_ENGINE_LIVE.has(item.status)))||agentImagePending&&agentImageConversationId===id;
   const activeConversationId=()=>String(agentPreferences.activeConversationId||'default');
   const activeAgentHistory=(id=activeConversationId())=>agentHistory.filter(item=>String(item.conversationId||'default')===id);
   function agentConversationMetadata(){
@@ -16,7 +17,7 @@
   }
   function switchAgentConversation(id){
     saveAgentInput();if(agentDraft)agentConversationResults.set(activeConversationId(),agentDraft);
-    agentPreferences.activeConversationId=id;agentDraft=agentConversationResults.get(id)||null;
+    agentPreferences.activeConversationId=id;setTimeout(assistantDrainApprovals,0);agentDraft=agentConversationResults.get(id)||null;
     agentInputDraft=String(agentPreferences.conversationDrafts[id]||'');agentEditingId='';
     agentDrawerOpen=false;agentRenameId='';agentDeleteConversationId='';persist();render(false);
     requestAnimationFrame(()=>main.querySelector('[name="question"]')?.focus({preventScroll:true}));
@@ -129,11 +130,11 @@ function parseClassPeriods(value){
     const broad=followup.match(/(?:对|是|就是|都)?\s*([本这下上])周(?:的)?(?:$|[，。,.])/);if(broad)value=value.replace(/周([一二三四五六日天])/g,(token,day,index,text)=>/[本这下上]/.test(text[index-1]||'')?token:broad[1]+token);
     return value;
   }
-  function contextualRescheduleQuery(query,conversationId=activeConversationId()){
+  function contextualRescheduleQuery(query,conversationId=activeConversationId(),priorHistory=null){
     const current=normalizeSpokenScheduleText(query),currentDates=parseRescheduleDateInfo(current).dates,hasCourse=Boolean(courseInText(current));
     if(/\bddl\b|截止|任务|事项|会议|考试|作业|报告|论文/i.test(current)&&!/调课|课表|课程|第?\s*(?:\d{1,4}|[一二三四五六七八九十两]{1,4})\s*节/.test(current))return '';
     if(isRescheduleIntent(current)&&(isScheduleSwapIntent(current)&&currentDates.length>=2||hasCourse&&currentDates.length>=2))return current;
-    const history=activeAgentHistory(conversationId),last=history.at(-1);if(last?.role==='assistant'&&/调课|调动|互换|哪一周|第几节|节次|课程名称|原日期|新日期|新时间|核对日期/.test(last.text||'')){
+    const history=priorHistory||activeAgentHistory(conversationId),last=history.at(-1);if(last?.role==='assistant'&&/调课|调动|互换|哪一周|第几节|节次|课程名称|原日期|新日期|新时间|核对日期/.test(last.text||'')){
       const prior=[...history].reverse().find(item=>item.role==='user'&&isRescheduleIntent(normalizeSpokenScheduleText(item.text)));
       if(prior&&(hasCourse||currentDates.length||periodPhrases(current).length||/本周|这周|下周|上周|下下周|上上周|上午|下午|晚上|全天|整天|对|是|换到|调到|原来|改成/.test(current))){
         let merged=qualifyPriorWeekdays(normalizeSpokenScheduleText(prior.text),current),parts=periodPhrases(current),parsed=parseRescheduleDateInfo(merged);
@@ -159,8 +160,8 @@ function parseClassPeriods(value){
     for(const move of moves){const conflict=lessonsOnDate(move.targetDate,{includeRescheduledOut:false}).some(item=>!selectedLessons.has(item.lesson)&&lessonPeriodNumbers(item.lesson).some(period=>move.targetPeriods.includes(period)));if(conflict)return {error:'互换后会和未参与调整的课程冲突，请缩小范围或修改节次。'}}
     return {firstDate,secondDate,firstPeriods:a,secondPeriods:b,scopeLabel,moves,courseNames:[...new Set(moves.map(move=>course(lessons[move.sourceLessonIndex].course)?.name).filter(Boolean))]};
   }
-  function localRescheduleAction(input,refs,conversationId=activeConversationId()){
-    const contextual=contextualRescheduleQuery(input,conversationId);if(!contextual)return null;
+  function localRescheduleAction(input,refs,conversationId=activeConversationId(),priorHistory=null){
+    const contextual=contextualRescheduleQuery(input,conversationId,priorHistory);if(!contextual)return null;
     const parsed=parseRescheduleDateInfo(contextual),query=parsed.text;if(parsed.ambiguous.length)return {answer:ambiguousWeekdayQuestion(parsed.ambiguous),choices:ambiguousWeekdayChoices(parsed.ambiguous),refs:[],action:{type:'none'},source:'local'};
     const dates=parsed.dates;if(dates.length<2)return {answer:'我听到你想调课了，请把原日期和调入日期都告诉我；如果只说周几，请注明本周还是下周。',refs:refs.slice(0,6),action:{type:'none'},source:'local'};
     const first=dates[0],second=dates[1],firstText=query.slice(first.end,second.start),secondText=query.slice(second.end);
@@ -283,8 +284,8 @@ function parseClassPeriods(value){
     const notePreview=action.type==='create_note'?'<pre class="xixu-agent-note-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;margin:0">'+esc(action.text)+'</pre>':'';
     return '<div class="xixu-agent-action '+(action.risk?'is-risk':'')+'"><span>'+icon(action.risk?'triangle-alert':'check-circle-2')+(action.risk?'确认删除':'核对操作')+'</span><strong>'+label+'</strong>'+notePreview+(action.reason?'<small>'+esc(action.reason)+'</small>':'')+'<div class="tide-detail-actions"><button class="tide-secondary" data-action="agent-dismiss">暂不处理</button><button class="'+(action.risk?'tide-delete':'tide-primary')+'" data-action="agent-confirm">'+(action.risk?'确认删除':'确认操作')+'</button></div></div>';
   }
-  function localAgentResult(query,refs,conversationId=activeConversationId()){
-    const reschedule=localRescheduleAction(query,refs,conversationId);if(reschedule)return reschedule;
+  function localAgentResult(query,refs,conversationId=activeConversationId(),priorHistory=null){
+    const reschedule=localRescheduleAction(query,refs,conversationId,priorHistory);if(reschedule)return reschedule;
     const retrievalIntent=/有什么|有哪些|哪些|查找|查询|搜索|最近.*(?:截止|作业|考试)|接下来.*(?:截止|作业|考试)|下周.*(?:截止|作业|考试)/.test(query);
     if(retrievalIntent)return {answer:localAgentAnswer(query,refs),refs:refs.slice(0,6),action:{type:'none'},source:'local'};
     const deadline=localDeadlineAction(query,refs);if(deadline)return deadline;
@@ -295,9 +296,9 @@ function parseClassPeriods(value){
     }catch(_){}
     return {answer:localAgentAnswer(query,refs),refs:refs.slice(0,6),action:{type:'none'},source:'local'};
   }
-  function agentMessageHtml(item){
+  function agentMessageHtml(item,resultIndex=null){
     const isUser=item.role==='user',avatar=isUser?'':'<span class="xixu-agent-avatar xixu-agent-avatar-agent" aria-hidden="true">'+icon('sparkles')+'</span>';
-    return '<div class="is-'+item.role+' xixu-agent-message" data-message-id="'+esc(item.id)+'"><div class="xixu-agent-message-head">'+(isUser?'':'<div class="xixu-agent-identity">'+avatar+'<span>汐序</span></div>')+'<details class="xixu-message-menu"><summary aria-label="'+(isUser?'消息选项':'回复选项')+'">'+icon('ellipsis')+'</summary><div class="xixu-message-actions">'+(isUser?'<button type="button" data-action="agent-edit-message" data-id="'+esc(item.id)+'" '+(agentPending?'disabled':'')+'>'+icon('pencil')+'<span>修改消息</span></button>':'')+'<button type="button" class="is-destructive" data-action="agent-delete-message" data-id="'+esc(item.id)+'" '+(agentPending?'disabled':'')+'>'+icon('trash-2')+'<span>删除消息</span></button>'+(isUser?'<small>同时删除对应回复，可以随时撤销。</small>':'')+'</div></details></div><p>'+esc(item.text)+'</p>'+(!isUser?agentRefsHtml(item.retrievalRefs):'')+'</div>'
+    return '<div class="is-'+item.role+' xixu-agent-message" data-message-id="'+esc(item.id)+'"><div class="xixu-agent-message-head">'+(isUser?'':'<div class="xixu-agent-identity">'+avatar+'<span>汐序</span></div>')+'<details class="xixu-message-menu"><summary aria-label="'+(isUser?'消息选项':'回复选项')+'">'+icon('ellipsis')+'</summary><div class="xixu-message-actions">'+(isUser?'<button type="button" data-action="agent-edit-message" data-id="'+esc(item.id)+'" '+(agentConversationBusy(activeConversationId())?'disabled':'')+'>'+icon('pencil')+'<span>修改消息</span></button>':'')+'<button type="button" class="is-destructive" data-action="agent-delete-message" data-id="'+esc(item.id)+'" '+(agentConversationBusy(activeConversationId())?'disabled':'')+'>'+icon('trash-2')+'<span>删除消息</span></button>'+(isUser?'<small>同时删除对应回复，可以随时撤销。</small>':'')+'</div></details></div><p>'+esc(item.text)+'</p>'+(!isUser?agentRefsHtml(item.retrievalRefs)+assistantMessageActionsHtml(item,resultIndex):'')+'</div>'
   }
   function agentConversationRow(item){
     const selected=item.id===activeConversationId(),busy=agentConversationBusy(item.id);
@@ -314,37 +315,22 @@ function parseClassPeriods(value){
   function renderAgent(){
     agentConversationMetadata();
     if(!agentWorkspaceInitialized){if(!agentInputDraft)agentInputDraft=String(agentPreferences.conversationDrafts[activeConversationId()]||'');agentWorkspaceInitialized=true}
-    const id=activeConversationId(),history=activeAgentHistory(),conversations=agentConversations(),current=conversations.find(item=>item.id===id),pendingHere=agentPending&&agentRequest?.conversationId===id,connected=Boolean((window.XixuModels&&aiHasKey())||(typeof knowledgeStatus==='function'&&knowledgeStatus().paired));
+    const id=activeConversationId(),history=activeAgentHistory(),conversations=agentConversations(),current=conversations.find(item=>item.id===id),pendingHere=agentConversationBusy(id),connected=Boolean((window.XixuModels&&aiHasKey())||(typeof knowledgeStatus==='function'&&knowledgeStatus().paired));
     const scroll=main.querySelector('.xixu-agent-chat-scroll');if(scroll?.dataset.conversationId===id)agentConversationScroll.set(id,scroll.scrollTop);
-    const visible=agentVisibleMessages.get(id)||40,displayHistory=history.slice(-visible);
-    let html='<section class="xixu-agent-workspace '+(agentDrawerOpen?'is-drawer-open':'')+'" aria-label="汐序聊天工作区"><button type="button" class="xixu-agent-drawer-scrim" data-action="agent-close-drawer" aria-label="关闭对话列表" tabindex="-1"></button><aside id="xixu-agent-conversations" class="xixu-agent-sidebar" '+(agentMobile()?(agentDrawerOpen?'role="dialog" aria-modal="true"':'inert aria-hidden="true"'):'role="complementary"')+' aria-label="对话列表"><div class="xixu-agent-sidebar-head"><strong>对话</strong><button type="button" class="tide-icon xixu-agent-drawer-close" data-action="agent-close-drawer" aria-label="关闭对话列表">'+icon('x')+'</button></div><button type="button" class="xixu-agent-sidebar-new" data-action="agent-new-conversation" aria-label="新对话">'+icon('square-pen')+'<span>新对话</span></button><nav class="xixu-agent-session-list" aria-label="历史对话">'+conversations.map(agentConversationRow).join('')+'</nav><button type="button" class="xixu-agent-library" data-action="agent-library">'+icon('notebook-pen')+'<span>我的知识库</span>'+icon('arrow-up-right')+'</button></aside><section class="xixu-agent-shell" data-conversation-id="'+esc(id)+'"><div class="xixu-agent-topbar"><button class="tide-icon xixu-agent-back" data-action="back" aria-label="返回">'+icon('arrow-left')+'</button><button type="button" class="tide-icon xixu-agent-drawer-toggle" data-action="agent-open-drawer" aria-label="打开对话列表" aria-controls="xixu-agent-conversations" aria-expanded="'+agentDrawerOpen+'">'+icon('panel-left')+'</button><div class="xixu-agent-brand"><strong>汐序助手</strong><span>'+esc(current?.title||'新对话')+'</span></div><button type="button" class="tide-icon xixu-agent-new" data-action="agent-new-conversation" aria-label="新对话">'+icon('square-pen')+'</button></div><div class="xixu-agent-chat-scroll" data-conversation-id="'+esc(id)+'" role="log" aria-label="对话消息" aria-busy="'+pendingHere+'"><div class="xixu-agent-chat-content">';
+    const visible=agentVisibleMessages.get(id)||40,displayHistory=history.slice(-visible),resultIndex=assistantBuildResultIndex(agentHistory,assistantEngine.state().tickets);
+    let html='<section class="xixu-agent-workspace '+(agentDrawerOpen?'is-drawer-open':'')+'" aria-label="汐序聊天工作区"><button type="button" class="xixu-agent-drawer-scrim" data-action="agent-close-drawer" aria-label="关闭对话列表" tabindex="-1"></button><aside id="xixu-agent-conversations" class="xixu-agent-sidebar" '+(agentMobile()?(agentDrawerOpen?'role="dialog" aria-modal="true"':'inert aria-hidden="true"'):'role="complementary"')+' aria-label="对话列表"><div class="xixu-agent-sidebar-head"><strong>对话</strong><button type="button" class="tide-icon xixu-agent-drawer-close" data-action="agent-close-drawer" aria-label="关闭对话列表">'+icon('x')+'</button></div><button type="button" class="xixu-agent-sidebar-new" data-action="agent-new-conversation" aria-label="新对话">'+icon('square-pen')+'<span>新对话</span></button><nav class="xixu-agent-session-list" aria-label="历史对话">'+conversations.map(agentConversationRow).join('')+'</nav><button type="button" class="xixu-agent-library" data-action="agent-library">'+icon('notebook-pen')+'<span>我的知识库</span>'+icon('arrow-up-right')+'</button></aside><section class="xixu-agent-shell" data-conversation-id="'+esc(id)+'"><div class="xixu-agent-topbar"><button class="tide-icon xixu-agent-back" data-action="back" aria-label="返回">'+icon('arrow-left')+'</button><button type="button" class="tide-icon xixu-agent-drawer-toggle" data-action="agent-open-drawer" aria-label="打开对话列表" aria-controls="xixu-agent-conversations" aria-expanded="'+agentDrawerOpen+'">'+icon('panel-left')+'</button><button type="button" class="tide-icon" data-action="assistant-work" aria-label="助手工作台">'+icon('layers')+'</button><div class="xixu-agent-brand"><strong>汐序助手</strong><span>'+esc(current?.title||'新对话')+'</span></div><button type="button" class="tide-icon xixu-agent-new" data-action="agent-new-conversation" aria-label="新对话">'+icon('square-pen')+'</button></div><div class="xixu-agent-chat-scroll" data-conversation-id="'+esc(id)+'" role="log" aria-label="对话消息" aria-busy="'+pendingHere+'"><div class="xixu-agent-chat-content">';
     if(history.length){
       if(history.length>visible)html+='<button type="button" class="xixu-agent-load-earlier" data-action="agent-load-earlier">查看更早的消息</button>';
-      html+='<div class="xixu-agent-history">'+displayHistory.map(agentMessageHtml).join('')+'</div>';
+      html+='<div class="xixu-agent-history">'+displayHistory.map(item=>agentMessageHtml(item,resultIndex)).join('')+'</div>';
     }else html+='<div class="xixu-agent-empty"><span class="xixu-agent-empty-mark" aria-hidden="true">'+icon('sparkles')+'</span><strong>今天想先处理什么？</strong><div class="xixu-agent-quick-grid"><button data-action="agent-prompt" data-text="看看我今天的课程和待办">'+icon('calendar-days')+'<span>看看今天</span></button><button data-action="agent-prompt" data-text="整理我刚才想到的碎片，先不要归类">'+icon('sparkles')+'<span>整理想法</span></button><button data-action="agent-prompt" data-text="看看我最近有哪些 DDL，先做什么比较好">'+icon('alarm-clock')+'<span>查看近期 DDL</span></button><button data-action="agent-prompt" data-text="帮我从备忘录里找一下最近需要继续处理的事情">'+icon('notebook-pen')+'<span>继续一条笔记</span></button></div></div>';
-    if(pendingHere)html+='<div class="xixu-agent-thinking" role="status"><i></i><i></i><i></i><span>'+(agentRequest?.stage==='retrieving'?'正在查找你的资料':connected?'正在结合你的资料思考':'正在本机整理')+'</span></div>';
-    if(agentDraft?.answer)html+='<div class="xixu-agent-answer">'+agentChoicesHtml(agentDraft.choices)+agentActionHtml(agentDraft.action)+agentDestinationHtml(agentDraft.receipt)+'</div>';
-    html+='</div></div><div class="xixu-agent-composer-dock">'+(agentEditingId?'<div class="xixu-agent-editing">正在修改已发送的内容<button type="button" data-action="agent-cancel-edit">取消修改</button></div>':'')+'<form id="xixu-agent-form" class="xixu-agent-composer"><button type="button" class="xixu-agent-image-button" data-action="agent-choose-image" aria-label="从图片读取文字" '+(agentImagePending?'disabled':'')+'>'+icon(agentImagePending?'loader-circle':'plus')+'</button><input id="xixu-agent-image" type="file" accept="image/*" hidden><textarea name="question" required maxlength="'+AGENT_DRAFT_MAX_CHARS+'" rows="1" aria-label="消息" placeholder="和汐序说点什么…">'+esc(agentInputDraft)+'</textarea><button class="xixu-agent-send" type="submit" aria-label="'+(agentPending?'正在思考':agentEditingId?'重新发送':'发送')+'" '+(agentPending?'disabled':'')+'>'+icon(pendingHere?'loader-circle':'arrow-up')+'</button></form></div></section></section>';
-    requestAnimationFrame(()=>{const next=main.querySelector('.xixu-agent-chat-scroll');if(next?.dataset.conversationId===id)next.scrollTop=agentConversationScroll.get(id)??next.scrollHeight});
+    if(pendingHere)html+='<div class="xixu-agent-thinking" role="status"><i></i><i></i><i></i><span>'+(assistantActiveRequest()?.stage==='approval-queued'?'有内容等待发送核对':assistantActiveRequest()?.stage==='retrieving'?'正在查找你的资料':connected?'正在结合你的资料思考':'正在本机整理')+'</span></div>';
+    if(agentDraft?.answer&&!agentDraft.ticketId)html+='<div class="xixu-agent-answer">'+agentChoicesHtml(agentDraft.choices)+agentActionHtml(agentDraft.action)+agentDestinationHtml(agentDraft.receipt)+'</div>';
+    html+='</div></div><div class="xixu-agent-composer-dock">'+(agentEditingId?'<div class="xixu-agent-editing">正在修改已发送的内容<button type="button" data-action="agent-cancel-edit">取消修改</button></div>':'')+'<form id="xixu-agent-form" class="xixu-agent-composer"><button type="button" class="xixu-agent-image-button" data-action="agent-choose-image" aria-label="从图片读取文字" '+(agentImagePending?'disabled':'')+'>'+icon(agentImagePending?'loader-circle':'plus')+'</button><input id="xixu-agent-image" type="file" accept="image/*" hidden><textarea name="question" required maxlength="'+AGENT_DRAFT_MAX_CHARS+'" rows="1" aria-label="消息" placeholder="和汐序说点什么…">'+esc(agentInputDraft)+'</textarea><button class="xixu-agent-send" type="submit" aria-label="'+(pendingHere?'正在思考':agentEditingId?'重新发送':'发送')+'" '+(agentConversationBusy(activeConversationId())?'disabled':'')+'>'+icon(pendingHere?'loader-circle':'arrow-up')+'</button></form></div></section></section>';
+    requestAnimationFrame(()=>{assistantRestoreActionDrafts();const next=main.querySelector('.xixu-agent-chat-scroll');if(next?.dataset.conversationId===id)next.scrollTop=agentConversationScroll.get(id)??next.scrollHeight});
     return html;
   }
-  function finishAgent(query,result,request=agentRequest){
-    if(!request||request!==agentRequest)return;
-    const now=new Date().toISOString(),conversationId=request.conversationId,index=agentHistory.findIndex(item=>item.id===request.userId);
-    const oldScroll=main.querySelector('.xixu-agent-chat-scroll'),follow=oldScroll?.dataset.conversationId===conversationId&&oldScroll.scrollHeight-oldScroll.clientHeight-oldScroll.scrollTop<80;
-    if(index<0){agentPending=false;agentRequest=null;persist();render();return}
-    const retrievalRefs=(result.refs||[]).slice(0,6).map(ref=>{
-      let text=String(ref.text||'').slice(0,900);if(/[\uD800-\uDBFF]$/.test(text))text=text.slice(0,-1);
-      const excerptStart=Number(ref.chunkStart||0),sourceEnd=Number(ref.chunkEnd)||excerptStart+text.length;
-      return {...Object.fromEntries(['documentId','chunkId','id','title','action','kind','recordType','date'].map(key=>[key,String(ref[key]||'').slice(0,200)])),url:String(ref.url||'').slice(0,4096),sourceId:String(ref.sourceId||ref.chunkId||'').slice(0,200),text,excerptStart,excerptEnd:Math.min(sourceEnd,excerptStart+text.length),partial:Boolean(ref.sourceExcerpt||ref.truncated||String(ref.text||'').length>text.length)};
-    });
-    agentHistory.splice(index+1,0,{id:uid(),conversationId,role:'assistant',text:result.answer,source:result.source||'local',createdAt:now,retrievalRefs});
-    agentConversationResults.set(conversationId,result);if(activeConversationId()===conversationId)agentDraft=result;
-    agentConversationMetadata()[conversationId]={...agentPreferences.conversations[conversationId],updatedAt:now};
-    agentPending=false;agentRequest=null;persist();render(false);
-    if(follow&&activeConversationId()===conversationId)requestAnimationFrame(()=>{const scroll=main.querySelector('.xixu-agent-chat-scroll');if(scroll)scroll.scrollTop=scroll.scrollHeight});
-  }
-  function updateAgentAnswer(text){agentDraft.answer=text;const latest=activeAgentHistory().at(-1);if(latest?.role==='assistant')latest.text=text;}
+  function finishAgent(query,result,request=assistantActiveRequest()){return assistantPublishResult(request,result)}
+  function updateAgentAnswer(text){agentDraft.answer=text;const work=agentDraft.ticketId?assistantEngine.state().tickets.find(item=>item.id===agentDraft.ticketId):null;const message=work?agentHistory.find(item=>item.id===work.resultMessageId):activeAgentHistory().at(-1);if(message?.role==='assistant')message.text=text;}
   function readAgentActionFields(action,container){
     const value=name=>String(container?.querySelector('[name="'+name+'"]')?.value||'').trim();
     try{
@@ -409,10 +395,10 @@ function parseClassPeriods(value){
     else if(button.dataset.action==='agent-load-earlier'){const id=activeConversationId(),scroll=main.querySelector('.xixu-agent-chat-scroll'),oldHeight=scroll?.scrollHeight||0,oldTop=scroll?.scrollTop||0;agentVisibleMessages.set(id,(agentVisibleMessages.get(id)||40)+40);render(false);requestAnimationFrame(()=>{const next=main.querySelector('.xixu-agent-chat-scroll');if(next)next.scrollTop=oldTop+next.scrollHeight-oldHeight})}
     else if(button.dataset.action==='agent-library'){saveAgentInput();agentDrawerOpen=false;page='notes';panel=null;previousPanel=null;persist();render(false)}
     else if(button.dataset.action==='agent-prompt'){agentInputDraft=button.dataset.text||'';saveAgentInput();persist();render(false);main.querySelector('[name="question"]')?.focus()}
-    else if(button.dataset.action==='agent-choice'&&!agentPending){agentInputDraft=button.dataset.text||'';saveAgentInput();render(false);setTimeout(()=>main.querySelector('#xixu-agent-form')?.requestSubmit(),0)}
+    else if(button.dataset.action==='agent-choice'&&!agentConversationBusy(activeConversationId())){agentInputDraft=button.dataset.text||'';saveAgentInput();render(false);setTimeout(()=>main.querySelector('#xixu-agent-form')?.requestSubmit(),0)}
     else if(button.dataset.action==='agent-view-result'&&agentDraft?.receipt){const destination=button.dataset.page||agentDraft.receipt.page,id=button.dataset.id||agentDraft.receipt.id;queueDelightCue('destination',{page:destination,id});page=destination;panel=null;previousPanel=null;render()}
-    else if(button.dataset.action==='agent-edit-message'){const item=agentHistory.find(entry=>entry.id===button.dataset.id&&entry.role==='user');if(item&&!agentPending){agentEditingId=item.id;agentInputDraft=item.text;saveAgentInput();agentDraft=null;agentConversationResults.delete(activeConversationId());persist();render(false);main.querySelector('[name="question"]')?.focus()}}
+    else if(button.dataset.action==='agent-edit-message'){const item=agentHistory.find(entry=>entry.id===button.dataset.id&&entry.role==='user');if(item&&!agentConversationBusy(activeConversationId())){agentEditingId=item.id;agentInputDraft=item.text;saveAgentInput();agentDraft=null;agentConversationResults.delete(activeConversationId());persist();render(false);main.querySelector('[name="question"]')?.focus()}}
     else if(button.dataset.action==='agent-cancel-edit'){agentEditingId='';agentInputDraft='';saveAgentInput();persist();render(false)}
-    else if(button.dataset.action==='agent-delete-message'&&!agentPending){const index=agentHistory.findIndex(entry=>entry.id===button.dataset.id);if(index>=0){const count=agentHistory[index].role==='user'&&agentHistory[index+1]?.role==='assistant'&&String(agentHistory[index+1].conversationId||'default')===activeConversationId()?2:1,removed=agentHistory.splice(index,count);if(removed.some(item=>item.id===agentEditingId)){agentEditingId='';agentInputDraft='';saveAgentInput()}agentDraft=null;agentConversationResults.delete(activeConversationId());persist();render(false);notify('这条对话已删除',()=>{agentHistory.splice(Math.min(index,agentHistory.length),0,...removed);persist();render(false)})}}
+    else if(button.dataset.action==='agent-delete-message'&&!agentConversationBusy(activeConversationId())){const index=agentHistory.findIndex(entry=>entry.id===button.dataset.id);if(index>=0){const count=agentHistory[index].role==='user'&&agentHistory[index+1]?.role==='assistant'&&String(agentHistory[index+1].conversationId||'default')===activeConversationId()?2:1,removed=agentHistory.splice(index,count);if(removed.some(item=>item.id===agentEditingId)){agentEditingId='';agentInputDraft='';saveAgentInput()}agentDraft=null;agentConversationResults.delete(activeConversationId());persist();render(false);notify('这条对话已删除',()=>{agentHistory.splice(Math.min(index,agentHistory.length),0,...removed);persist();render(false)})}}
     else if(button.dataset.action==='agent-dismiss'&&agentDraft){agentDraft.action={type:'none'};render()}
   });

@@ -33,7 +33,7 @@
     assistantShowSheet('历史快照',(checkpointMessage?'<p role="status">'+esc(checkpointMessage)+'</p>':'')+'<p>每天首次使用时保留一份本机快照，也可以手动保存。选择实际存在的日期和时刻恢复课表、事项、备忘录、碎片、对话及助手记录。原件不会因恢复而删除。</p><form id="xixu-checkpoint-filter" class="tide-form"><label class="tide-field">查看日期<input type="date" name="day" value="'+esc(day)+'"></label><button class="tide-secondary">按日期查找</button></form><button class="tide-secondary" data-action="checkpoint-create">保存当前快照</button>'+items.map(item=>'<article class="xixu-journal-row"><strong>'+esc(item.label)+'</strong><time>'+esc(new Date(item.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}))+'</time><p>'+item.counts.map(value=>esc(({courses:'课程',lessons:'排课',tasks:'事项',notes:'备忘录',scratchEntries:'碎片',agentHistory:'消息'})[value.key])+' '+value.count).join(' · ')+'</p><button class="tide-secondary" data-action="checkpoint-preview" data-id="'+esc(item.id)+'">核对这一时刻</button></article>').join('')+(items.length?'':'<p>这个日期尚无快照。不能恢复安装此功能前未记录的时刻。</p>'),'checkpoints');
   }
   async function checkpointPreview(id){
-    if(agentPending||noteImportBusy||completeBackupBusy||checkpointBusy)throw Error('请先结束当前处理');
+    if(assistantAnyWorkBusy()||noteImportBusy||completeBackupBusy||checkpointBusy)throw Error('请先结束当前处理');
     const item=checkpointState().items.find(entry=>entry.id===id);if(!item)throw Error('快照已不存在');
     const base=JSON.stringify(snapshot()),data=await checkpointRead(item);
     for(const asset of item.assets){const checked=await archiveWalk(asset.hash);if(checked.bytes!==asset.bytes)throw Error('有历史原件缺失，未恢复')}

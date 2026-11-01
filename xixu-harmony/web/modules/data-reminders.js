@@ -235,10 +235,6 @@
   function snapshot(){return {format:'xixu-backup',schemaVersion:DATA_SCHEMA_VERSION,termStart:TERM_MONDAY,scheduleSettings,courses,lessons,tasks,notes,scratchEntries,ocrCorrectionRules,agentHistory,agentPreferences};}
   function reminderPayload(){
     const names=new Map(courses.map(item=>[item.id,item.name]));
-    const day=new Date(DEMO_DAY+'T12:00:00+08:00').getDay(),minutes=new Date(DEMO_NOW).getHours()*60+new Date(DEMO_NOW).getMinutes();
-    let untilFriday=(5-day+7)%7;if(untilFriday===0&&minutes>=20*60)untilFriday=7;
-    const friday=addDays(DEMO_DAY,untilFriday),monday=addDays(friday,-4),sunday=addDays(monday,6);
-    const weekItems=tasks.filter(item=>item.date>=monday&&item.date<=sunday),completed=weekItems.filter(item=>item.done).length,pending=weekItems.filter(item=>!item.done).length;
     const reminderTasks=tasks.map(item=>({id:item.id,type:item.type,title:item.title,courseName:names.get(item.course)||'',date:item.date,time:item.time||'',repeat:item.repeat||'none',reminders:item.reminders||[],done:item.done}));
     return JSON.stringify({tasks:reminderTasks});
   }
@@ -250,7 +246,9 @@
   function syncReminders(){
     if(!window.XixuReminder)return;
     reminderState={...reminderState,state:reminderState.state==='disabled'?'disabled':'syncing'};
-    if(!window.XixuReminder.sync(reminderPayload()))reminderState={state:'error',count:0,message:'提醒同步失败。'};
+    try{if(!window.XixuReminder.sync(reminderPayload()))throw Error('sync')}
+    catch(_){reminderState={state:'error',count:0,message:'提醒同步失败。'};return false}
+    return true;
   }
   function reminderStatusHtml(){
     if(reminderState.state==='preview')return '<span class="tide-pill warm">应用内可用</span>';
@@ -263,12 +261,6 @@
     reminderState={state:String(state||'error'),count:Number(count)||0,message:String(message||'')};
     if(panel?.kind==='settings')render();
   };
-  function renderWeeklyWrap() {
-    const monday=addDays(DEMO_DAY,-((new Date(DEMO_DAY+'T12:00:00Z').getUTCDay()+6)%7)),sunday=addDays(monday,6),nextSunday=addDays(sunday,7);
-    const thisWeek=tasks.filter(t=>t.date>=monday&&t.date<=sunday),completed=thisWeek.filter(t=>t.done),pending=thisWeek.filter(t=>!t.done);
-    const next=sortTasks(tasks.filter(t=>!t.done&&isDeadline(t)&&t.date>sunday&&t.date<=nextSunday))[0];
-    return top('每周回顾')+'<div class="xixu-wrap-hero"><span>'+icon('sparkles')+' 本周</span><strong>'+completed.length+' 项已完成</strong><small>'+pending.length+' 项待处理</small></div><div class="xixu-wrap-grid"><div><span>已完成</span><strong>'+completed.length+'</strong></div><div><span>待处理</span><strong>'+pending.length+'</strong></div></div><div class="tide-section"><h2>下周最早截止日期</h2></div>'+(next?deadlineRow(next):empty('还没有记录下周的截止事项。'))+'<div class="tide-note">周五打开这里，快速查看本周完成情况和下一个截止日期。汐序不会替你提交任何内容。</div>';
-  }
   function renderWidgetPreview() {
     const first=active()[0],todayLesson=lessons.filter(l=>l.day===(new Date(DEMO_DAY+'T12:00:00Z').getUTCDay()+6)%7&&l.weeks.includes(week)).sort((a,b)=>lessonStart(a).localeCompare(lessonStart(b)))[0];
     return top('鸿蒙桌面卡片')+'<div class="xixu-widget"><div class="xixu-widget-top"><span>'+icon('waves')+' 汐序</span><small>'+dateLabel(DEMO_DAY)+' · '+weekday(DEMO_DAY)+'</small></div><div class="xixu-widget-focus"><small>下一个截止事项</small><strong>'+(first?esc(first.title):'今天没有待办')+'</strong><span>'+(first?esc(dateLabel(first.date)+' '+first.time+' · '+relative(first)):'给自己留一点从容时间')+'</span></div><div class="xixu-widget-line"><span>下一节课</span><strong>'+(todayLesson?esc(lessonStart(todayLesson)+' '+course(todayLesson.course).short):'今天没有更多课程')+'</strong></div></div><div class="tide-note">这是汐序桌面卡片的预览，当前页面只展示设计，暂未启用卡片支持。</div>';
@@ -295,11 +287,16 @@
     }).join('')+'</div>';
     return html+'<div class="tide-sub">课程、事项和截止安排共享日期，计划周会延续到学期结束以后。</div>';
   }
-  function persist() {
-    if(storageBlocked)return;
-    const data=JSON.stringify(snapshot());if(data===lastSaved)return;
-    try{storageWrite(data);lastSaved=data;saveError.hidden=true;syncReminders();}
-    catch(_){saveError.textContent='这次修改还没有保存，请检查可用存储空间后再关闭汐序。';saveError.hidden=false;}
+  function persist(options={}) {
+    if(storageBlocked)return false;
+    try{
+      // Keep the existing atomic snapshot format. Each save serializes once;
+      // metadata-only agent transitions must not rebuild system reminders.
+      const data=JSON.stringify(snapshot());if(data===lastSaved)return true;
+      storageWrite(data);lastSaved=data;saveError.hidden=true;
+    }catch(_){saveError.textContent='这次修改还没有保存，请检查可用存储空间后再关闭汐序。';saveError.hidden=false;return false}
+    if(options.scope!=='assistant'&&options.reminders!==false)syncReminders();
+    return true;
   }
   function loadSaved() {
     try {

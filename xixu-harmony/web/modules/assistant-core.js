@@ -18,7 +18,15 @@
     for(const entry of value.journal)if(!entry||typeof entry.id!=='string'||!Array.isArray(entry.deltas)||entry.deltas.some(delta=>!delta||!['courses','lessons','tasks','notes'].includes(delta.collection)||typeof delta.id!=='string'||delta.before!==null&&typeof delta.before!=='object'||delta.after!==null&&typeof delta.after!=='object'))throw Error('变更档案无效，未覆盖数据。');
     if(value.privateTerms!==undefined&&(!Array.isArray(value.privateTerms)||value.privateTerms.length>500||value.privateTerms.some(term=>typeof term!=='string'||!term||term.length>80)))throw Error('隐藏词表无效');
     if(value.temporalResolutions!==undefined&&(!Array.isArray(value.temporalResolutions)||value.temporalResolutions.some(item=>!item||typeof item.subject!=='string'||typeof item.scope!=='string'||typeof item.value!=='string'||!Array.isArray(item.fingerprints)||item.fingerprints.some(value=>typeof value!=='string'))))throw Error('通知核对依据无效');
+    validateAssistantEngine(value.orchestration);
     const history=value.checkpoints;
+    if(value.workRequests!==undefined){
+      if(!Array.isArray(value.workRequests)||value.workRequests.length>100)throw Error('处理请求记录无效');
+      const ids=new Set();for(const item of value.workRequests){
+        if(!item||typeof item.id!=='string'||!item.id||ids.has(item.id)||typeof item.conversationId!=='string'||typeof item.userId!=='string'||typeof item.route!=='string'||!['running','interrupted','failed','review','ready','cancelled','confirmed','dismissed'].includes(item.status)||!Number.isFinite(Date.parse(item.startedAt)))throw Error('处理请求条目无效');
+        ids.add(item.id);
+      }
+    }
     if(history!==undefined){
       if(!history||history.version!==1||!Array.isArray(history.items))throw Error('历史快照索引无效');
       const historyIds=new Set();
@@ -42,11 +50,6 @@
     if(state.traces.length>300)state.traces.splice(0,state.traces.length-300);
     return state.traces.at(-1).id;
   }
-  const finishBeforeAssistant=finishAgent;
-  finishAgent=function(query,result,request=agentRequest){
-    if(request&&request===agentRequest)result.traceId=assistantTrace(request,result);
-    return finishBeforeAssistant(query,result,request);
-  };
   function assistantSheetHtml(){return assistantSheet?'<div class="xixu-assistant-overlay"><section class="xixu-assistant-sheet" role="dialog" aria-modal="true" aria-labelledby="xixu-assistant-sheet-title"><header><h2 id="xixu-assistant-sheet-title">'+esc(assistantSheet.title)+'</h2><button type="button" data-action="assistant-close" aria-label="关闭">'+icon('x')+'</button></header>'+assistantSheet.html+'</section></div>':''}
   function assistantRefreshSheet(){
     const existing=root.querySelector('.xixu-assistant-overlay');if(assistantSheet&&existing?.dataset.sheetToken===assistantSheet.token)return;
@@ -57,6 +60,7 @@
     if(globalThis.lucide)globalThis.lucide.createIcons({root:root.querySelector('.xixu-assistant-overlay')});
   }
   function assistantShowSheet(title,html,kind='info'){
+    if(assistantSheet&&['privacy','vision'].includes(assistantSheet.kind)&&assistantSheet.kind!==kind)throw Error('请先完成或关闭当前发送核对');
     assistantSheetFocus=document.activeElement;assistantSheet={title,html,kind,token:uid()};assistantRefreshSheet();window.XixuBack?.setCanGoBack?.(true);
     requestAnimationFrame(()=>root.querySelector('.xixu-assistant-sheet button,.xixu-assistant-sheet input')?.focus({preventScroll:true}));
   }
@@ -64,6 +68,7 @@
     const old=assistantSheet;assistantSheet=null;root.querySelector('.xixu-assistant-overlay')?.remove();
     if(old?.kind==='privacy')assistantCancelPrivacy();
     if(old?.kind==='vision')assistantCancelVision();
+    if(typeof assistantDrainApprovals==='function')setTimeout(assistantDrainApprovals,0);
     if(typeof syncBackState==='function')syncBackState();
     if(assistantSheetFocus?.isConnected)assistantSheetFocus.focus({preventScroll:true});
   }
@@ -91,6 +96,7 @@
   function assistantTool(name,args,context={}){
     const definition=assistantTools.get(name);if(!definition)throw Error('不支持的工具');
     assistantValidate(definition.inputSchema,args);
+    if(name==='recall_conversation')return {readOnly:true,messages:assistantRecallConversation(context.request,args)};
     if(name==='search_web')return {readOnly:true,type:'search_web',query:args.query,limit:args.limit||5};
     if(name==='search_notes')return {readOnly:true,refs:semanticAgentSearch(args.query).filter(ref=>!args.date_from||String(ref.date||'')>=args.date_from).filter(ref=>!args.date_to||String(ref.date||'')<=args.date_to).slice(0,args.limit||5)};
     if(name==='get_schedule')return {readOnly:true,...assistantSchedule(args)};
@@ -146,8 +152,8 @@
   function assistantTitle(text){
     return text.replace(/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想要?|我要)\s*)?(?:添加|新增|创建|安排|提醒我)(?:一[条个项])?(?:任务|日程|事项|提醒)?[：:，,\s]*/,'').replace(/(?:(?:\d{4})[年/-])?\d{1,2}[月/-]\d{1,2}(?:日|号)?/g,'').replace(/(?:下下|上上|本|这|下|上)?周[一二三四五六日天]?|大后天|前天|昨天|今天|今晚|明天|明晚|后天/g,'').replace(/(?:凌晨|早上|上午|中午|下午|晚上)?\s*[零〇一二三四五六七八九十两\d]{1,3}[点时](?:半|一刻|三刻|[零〇一二三四五六七八九十两\d]{1,2}分?)?|\d{1,2}[:：]\d{2}/g,'').replace(/^[的在，,\s]+|[，,\s]+$/g,'').trim().slice(0,100);
   }
-  function assistantRuleCommand(input){
-    const text=normalizeSpokenScheduleText(input).trim(),conversation=activeConversationId(),state=assistantState();let pending=state.pendingSlots[conversation];
+  function assistantRuleCommand(input,conversation=activeConversationId()){
+    const text=normalizeSpokenScheduleText(input).trim(),state=assistantState();let pending=state.pendingSlots[conversation];
     if(pending&&Date.now()-pending.updatedAt>1800000){delete state.pendingSlots[conversation];pending=null}
     if(/^(?:算了|取消|不用了|重新开始)[。！!\s]*$/.test(text)&&pending){delete state.pendingSlots[conversation];return {answer:'已取消这次未完成的安排，没有写入日程。',refs:[],action:{type:'none'},source:'local',tool:'cancel_pending'}}
     const intent=assistantRouteIntent(text,Boolean(pending)),startsTask=['create_event','create_todo'].includes(intent);
@@ -170,7 +176,7 @@
     const action=assistantTool(name,args);delete state.pendingSlots[conversation];
     return {answer:'已整理“'+next.title+'”。'+(!next.time&&next.type==='homework'?'截止时刻暂按 23:59 展示，请核对。':'请核对后确认加入。'),refs:[],action,tool:name,source:'local'};
   }
-  function localAgentCommand(query){return assistantRuleCommand(query)||assistantScheduleAnswer(query)||localAgentNoteCommand(query)}
+  function localAgentCommand(query,conversationId=activeConversationId()){return assistantRuleCommand(query,conversationId)||assistantScheduleAnswer(query)||localAgentNoteCommand(query)}
   function assistantScheduleAnswer(query){
     if(!/安排|日程|课|空闲|有空|冲突|足球|踢球/.test(query)||!(agentReadQuestion(query)||/能不能|可以|(?:我想|想去|能去).*(?:足球|踢球)/.test(query)))return null;
     const date=assistantDateSlots(query);if(date.ambiguous)return {answer:'你指本周还是下周？请把查询日期说完整，我再查课表和日程。',refs:[],action:{type:'none'},source:'local'};if(!date.date)return null;
@@ -230,21 +236,24 @@
   }
   async function assistantApplyPlan(){
     if(storageBlocked)throw Error('本机资料读取异常，未覆盖保存');
-    const plan=assistantPlan;if(!plan||!root.querySelector('#xixu-plan-accept')?.checked){notify('请先勾选接受这组变更');return}
+    const plan=assistantPlan;if(plan?.draft?.ticketId)assistantAssertPlanTicket(plan.draft.ticketId);if(!plan||!root.querySelector('#xixu-plan-accept')?.checked){notify('请先勾选接受这组变更');return}
     if(plan.applying)return;plan.applying=true;
     try{if(plan.commitmentId)await assistantVerifyCommitment(assistantState().commitments.find(item=>item.id===plan.commitmentId))}catch(error){plan.applying=false;throw error}
     if(assistantPlan!==plan)throw Error('这次预览已经关闭，请重新核对');
     plan.applying=false;
     if(assistantStable(assistantRows())!==assistantStable(plan.before))throw Error('预览后资料已改变，请关闭后重新核对。');
     const state=assistantState(),entry={id:uid(),at:new Date().toISOString(),kind:plan.action.type,deltas:plan.deltas,rolledBackAt:''};
-    const previous=assistantClone(state);assistantRestoreRows(plan.after);state.journal.push(entry);
-    if(plan.commitmentId){const candidate=state.commitments.find(item=>item.id===plan.commitmentId);if(candidate){candidate.status='recorded';candidate.matchedTaskId=plan.deltas.find(item=>item.collection==='tasks'&&item.after)?.id||'';entry.commitmentId=candidate.id}}
-    const trace=state.traces.find(item=>item.id===plan.draft?.traceId);if(trace){trace.confirmed=true;trace.outcome='confirmed'}
-    const raw=JSON.stringify(snapshot());
-    try{checkData(JSON.parse(raw),false);storageWrite(raw);lastSaved=raw;saveError.hidden=true}
-    catch(error){assistantRestoreRows(plan.before);agentPreferences.intelligence=previous;throw error}
-    if(plan.draft&&agentDraft===plan.draft){agentCommitReceipt(plan.destination,'查看已保存的安排',plan.deltas.find(item=>item.collection==='tasks'&&item.after)?.id||'','calendar-check');updateAgentAnswer('已按核对内容保存，可以在变更记录中追溯或撤回。')}
-    assistantPlan=null;assistantCloseSheet();persist();syncReminders();render(false);notify('变更已保存');
+    const previous=assistantClone(state),receipt={page:plan.destination,label:'查看已保存的安排',id:plan.deltas.find(item=>item.collection==='tasks'&&item.after)?.id||'',icon:'calendar-check'};
+    try{
+      assistantRestoreRows(plan.after);state.journal.push(entry);
+      if(plan.commitmentId){const candidate=state.commitments.find(item=>item.id===plan.commitmentId);if(candidate){candidate.status='recorded';candidate.matchedTaskId=receipt.id;entry.commitmentId=candidate.id}}
+      const trace=state.traces.find(item=>item.id===plan.draft?.traceId);if(trace){trace.confirmed=true;trace.outcome='confirmed'}
+      assistantSettlePlanTicket(plan.draft?.ticketId,receipt);
+      const raw=JSON.stringify(snapshot());checkData(JSON.parse(raw),false);storageWrite(raw);lastSaved=raw;saveError.hidden=true;
+    }catch(error){assistantRestoreRows(plan.before);agentPreferences.intelligence=previous;throw error}
+    if(plan.draft?.ticketId)assistantUpdatePlanMessage(plan);
+    else if(plan.draft&&agentDraft===plan.draft){agentCommitReceipt(plan.destination,'查看已保存的安排',receipt.id,'calendar-check');updateAgentAnswer('已按核对内容保存，可以在变更记录中追溯或撤回。')}
+    assistantPlan=null;assistantCloseSheet();persist({reminders:false});syncReminders();render(false);notify('变更已保存');
   }
   function assistantUndoJournal(id){
     if(storageBlocked)throw Error('本机资料读取异常，未覆盖保存');
@@ -262,12 +271,16 @@
   canNavigateBack=function(){return Boolean(assistantSheet)||navigateBeforeAssistant()};
   const backBeforeAssistant=window.XixuHandleSystemBack;
   window.XixuHandleSystemBack=()=>{if(assistantSheet){assistantCloseSheet();return true}return backBeforeAssistant?.()};
-  renderSettings=function(){return settingsBeforeAssistantCore()+'<div class="tide-section"><h2>助手记录</h2></div><div class="xixu-setting-actions"><button data-action="assistant-journal">'+icon('git-compare-arrows')+'<span>日程变更记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-traces">'+icon('activity')+'<span>处理记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-private-terms">'+icon('shield-check')+'<span>发送前隐藏词表</span>'+icon('chevron-right')+'</button></div>'};
+  renderSettings=function(){return settingsBeforeAssistantCore()+assistantWorkSettingsHtml()+'<div class="tide-section"><h2>助手记录</h2></div><div class="xixu-setting-actions"><button data-action="assistant-journal">'+icon('git-compare-arrows')+'<span>日程变更记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-traces">'+icon('activity')+'<span>处理记录</span>'+icon('chevron-right')+'</button><button data-action="assistant-private-terms">'+icon('shield-check')+'<span>发送前隐藏词表</span>'+icon('chevron-right')+'</button></div>'};
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-action]');if(!button)return;const action=button.dataset.action;
     try{
+      if(['agent-confirm','agent-dismiss','agent-choice','agent-view-result','assistant-temporal-review','assistant-start-web'].includes(action))assistantBindMessageResult(button);
       if(action==='assistant-close'){event.preventDefault();event.stopImmediatePropagation();assistantCloseSheet()}
-      else if(action==='agent-dismiss'){delete assistantState().pendingSlots[activeConversationId()]}
+      else if(action==='agent-dismiss'){
+        const state=assistantState(),ticketId=agentDraft?.ticketId;
+        if(ticketId)assistantEngine.control(ticketId,'dismiss');else delete state.pendingSlots[activeConversationId()];
+      }
       else if(action==='agent-confirm'&&agentDraft&&['create_task','create_note','complete_task','plan_task','append_note','delete_task','delete_note','delete_course','tool_update_event','reschedule_lesson','swap_schedule'].includes(agentDraft.action?.type)){
         event.preventDefault();event.stopImmediatePropagation();if(readAgentActionFields(agentDraft.action,button.closest('.xixu-agent-action')))assistantPreviewPlan(agentDraft.action,button);
       }else if(action==='assistant-plan-apply'){event.preventDefault();event.stopImmediatePropagation();assistantApplyPlan().catch(error=>notify(error.message||'尚未保存'))}
