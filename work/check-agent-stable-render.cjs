@@ -1,3 +1,4 @@
+const {installModelFixture,approveFixtureRequests,savePlan}=require('./assistant-test-fixture.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -79,7 +80,7 @@ async function runCase(width) {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.goto('http://127.0.0.1:' + server.address().port);
+    await installModelFixture(page);await approveFixtureRequests(page);await page.goto('http://127.0.0.1:' + server.address().port);
     await page.locator('.tide-settings-fab').click();
     await page.locator('[data-action="agent-open"]').click();
     await page.locator('.xixu-agent-chat-scroll').waitFor();
@@ -101,7 +102,7 @@ async function runCase(width) {
     check(prefix + 'long history has an independent scroll container', initial.scrollable);
 
     const input = page.locator('#xixu-agent-form textarea');
-    await input.fill('检索我的知识库并整理相关资料，先不要进行修改');
+    await input.fill('综合分析我的知识库并整理相关资料，先不要进行修改');
     await input.focus();
     await page.locator('#xixu-agent-form').evaluate(form => form.requestSubmit());
     await page.waitForFunction(() => window.__stableRenderTest.payloads.length === 1);

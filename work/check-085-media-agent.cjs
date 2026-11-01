@@ -1,15 +1,17 @@
+const {installModelFixture,approveFixtureRequests,savePlan,undoPlan}=require('./assistant-test-fixture.cjs');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),http=require('node:http');
 const {chromium,launchOptions}=require('./browser-test-runtime.cjs');
 const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile'),types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'};
 const server=http.createServer((req,res)=>{const name=req.url==='/'?'index.html':req.url.slice(1),file=path.join(raw,name);if(!/^[\w.-]+$/.test(name)||!fs.existsSync(file)){res.writeHead(404).end();return}res.setHeader('Content-Type',types[path.extname(file)]||'text/plain');res.end(fs.readFileSync(file))});
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR42mNk+M9Qz0AEYBxVSFUAAM0ABf4B6cQAAAAASUVORK5CYII=','base64');
-// Execute the production confirmation branch against a synthetic near-limit
-// record: rejected appends must not poison the persisted library on restart.
-const vm=require('node:vm'),appendBranch=fs.readFileSync(path.resolve('xixu-harmony/web/modules/agent.js'),'utf8').split(/\r?\n/).find(line=>line.trim().startsWith("else if(action.type==='append_note')"));
-assert.ok(appendBranch,'The Agent append confirmation branch must exist');
-const limitedNote={id:'limit',title:'容量边界',text:'原'.repeat(49999),updatedAt:'2026-09-18T01:02:03Z'},unchangedLimit={...limitedNote},limitFeedback=[],rejectWrite=()=>{throw Error('An oversized append must never update receipts or persist')};
-vm.runInNewContext('function confirmAppend(){if(false){}'+appendBranch+'}\nconfirmAppend();',{notes:[limitedNote],action:{type:'append_note',noteId:'limit',text:'新增'},notify:text=>limitFeedback.push(text),agentCommitReceipt:rejectWrite,queueDelightCue:rejectWrite,persist:rejectWrite,render:rejectWrite,currentDraft:{receipt:null}});
-assert.deepEqual(limitedNote,unchangedLimit);assert.match(limitFeedback.join('\n'),/50000.*没有写入/);
+// The production preview stages changes on a clone; capacity rejection must
+// leave both the source and storage untouched.
+const vm=require('node:vm'),core=fs.readFileSync('xixu-harmony/web/modules/assistant-core.js','utf8');
+const start=core.indexOf('  function assistantPreviewPlan('),end=core.indexOf('  async function assistantApplyPlan(',start);
+const limitedNote={id:'limit',title:'容量边界',text:'原'.repeat(49999),updatedAt:'2026-09-18T01:02:03Z'},unchangedLimit={...limitedNote};
+const preview=vm.runInNewContext(core.slice(start,end)+'\nassistantPreviewPlan',{storageBlocked:false,lessons:[],assistantRows:()=>({notes:[limitedNote]}),assistantClone:value=>JSON.parse(JSON.stringify(value)),assistantStable:JSON.stringify,assistantShowSheet:()=>{throw Error('oversized append must not open a save preview')}});
+assert.throws(()=>preview({type:'append_note',noteId:'limit',text:'新增'}),/超出容量/);
+assert.deepEqual(limitedNote,unchangedLimit);
 let browser;
 (async()=>{
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -17,7 +19,7 @@ let browser;
   const page=await browser.newPage({viewport:{width:390,height:900}}),today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const originalNoteText='  已经完成第一次沟通\r\n原始行尾验证\t\r\n  ',now=new Date().toISOString(),seed={format:'xixu-backup',schemaVersion:8,termStart:'2026-08-31',courses:[],lessons:[],tasks:[],notes:[{id:'n1',title:'申请记录',text:originalNoteText,category:'笔记',course:'',createdAt:now,updatedAt:now}],ocrCorrectionRules:{},agentHistory:[{role:'user',text:'旧问题'},{role:'assistant',text:'旧回答'}],agentPreferences:{courses:true,tasks:true,notes:true}};
   await page.addInitScript(value=>{localStorage.setItem('xixu-v1',JSON.stringify(value));window.XixuAI={hasKey:()=>true,analyze(payload){window.__mediaAgentPayload=JSON.parse(payload);setTimeout(()=>window.XixuReceiveAI(true,200,JSON.stringify({choices:[{message:{content:JSON.stringify({answer:'我会把这次内容整理到申请记录，确认后写入。',action:{type:'append_note',noteId:'n1',text:'第二次沟通已经结束',reason:'继续补充同一主题'}})}}]})),10);return true},saveKey:()=>true,deleteKey:()=>true}},seed);
-  await page.goto('http://127.0.0.1:'+server.address().port);
+  await installModelFixture(page);await approveFixtureRequests(page);await page.goto('http://127.0.0.1:'+server.address().port);
   let state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));
   assert.equal(state.schemaVersion,10);assert.ok(state.agentHistory.every(item=>item.id));assert.deepEqual(state.notes[0].images,[]);
 
@@ -35,9 +37,9 @@ let browser;
 
   await page.locator('.xixu-agent-entry').click();assert.equal(await page.locator('#xixu-agent-note-target').count(),0);await page.locator('[name=question]').fill('把第二次沟通结果整理进申请记录');await page.getByRole('button',{name:'发送'}).click();await page.getByRole('button',{name:'确认操作'}).waitFor();
   state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.notes.find(note=>note.id==='n1').text,originalNoteText,'Preparing an append must leave the source body unchanged');assert.equal(state.notes.find(note=>note.id==='n1').updatedAt,now);
-  await page.getByRole('button',{name:'确认操作'}).click();
+  await page.getByRole('button',{name:'确认操作'}).click();await savePlan(page);
   state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.notes.find(note=>note.id==='n1').text,originalNoteText+'\n\n第二次沟通已经结束','Appending must preserve the entire existing body, including whitespace and CRLF');assert.equal(state.agentHistory.length,4);
-  await page.getByRole('button',{name:'撤销',exact:true}).click();state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.notes.find(note=>note.id==='n1').text,originalNoteText,'Undo must restore the exact original body');assert.equal(state.notes.find(note=>note.id==='n1').updatedAt,now);
+  await undoPlan(page);state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.notes.find(note=>note.id==='n1').text,originalNoteText,'Undo must restore the exact original body');assert.equal(state.notes.find(note=>note.id==='n1').updatedAt,now);
   await page.locator('.xixu-agent-history .is-user').last().locator('summary').click();await page.locator('.xixu-agent-history .is-user').last().getByRole('button',{name:'修改消息'}).click();assert.equal(await page.locator('[name=question]').inputValue(),'把第二次沟通结果整理进申请记录');await page.locator('[name=question]').fill('把修改后的第二次沟通整理进申请记录');await page.getByRole('button',{name:'重新发送'}).click();await page.getByRole('button',{name:'确认操作'}).waitFor();
   state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.agentHistory.length,4);assert.equal(state.agentHistory[2].text,'把修改后的第二次沟通整理进申请记录');
   await page.locator('.xixu-agent-history .is-user').last().locator('summary').click();await page.locator('.xixu-agent-history .is-user').last().getByRole('button',{name:'删除消息'}).click();state=await page.evaluate(()=>JSON.parse(localStorage.getItem('xixu-v1')));assert.equal(state.agentHistory.length,2);

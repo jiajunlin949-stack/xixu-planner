@@ -134,20 +134,35 @@
     const result=assistantEngine.receive({source:'conversation',key:userId+':'+version+':'+(message.editedAt||''),thread:conversationId,ticketId,ref:{source:'conversation',id:userId,version,at:String(message.editedAt||message.createdAt||'')}});
     assistantQueuePass();return result;
   }
-  async function assistantIntakeMaterials(records){
-    if(!assistantRuntimeReady||storageBlocked)return;
+  let assistantMaterialIntake=null;
+  function assistantIntakeMaterials(records){
+    if(!assistantRuntimeReady||storageBlocked)return Promise.resolve();
     const owner=agentPreferences;
+    if(!assistantMaterialIntake||assistantMaterialIntake.owner!==owner)assistantMaterialIntake={owner,queue:new Map(),running:null};
+    const intake=assistantMaterialIntake,tracked=new Set(assistantEngine.state().threads.filter(item=>item.source==='material').map(item=>item.sourceId));
     for(const record of records){
-      if(owner!==agentPreferences||!assistantEngine.state().policy.materials)return;
-      const version=await archiveSha(new TextEncoder().encode(String(record.text||'')));if(owner!==agentPreferences)return;
-      if(!assistantSourceRecords().some(item=>item.id===record.id&&item.text===record.text))continue;
-      // Cursor = content hash in the durable trigger key. Reopening the app or
-      // importing identical material doesn't create a second task.
-      assistantEngine.receive({source:'material',key:record.id+':'+version,thread:record.id,ref:{source:'material',id:record.id,version,at:String(record.at||'')}});
-      for(const [id,job] of assistantBackgroundJobs){const work=assistantEngine.state().tickets.find(item=>item.id===id);if(work?.status==='superseded'&&assistantBackgroundJobs.get(id)===job)assistantBackgroundJobs.delete(id)}
-      assistantQueuePass();await archiveYield();
+      // Do not create durable jobs for every ordinary note on each launch.
+      // Tracked evidence is always rechecked, including cancellation-only edits.
+      if(tracked.has(record.id)||/提交|交(?:作业|报告|开题|稿|材料)|截止|汇报|答辩|开会|考试|开题.*交|(?:号|日|天|周[一二三四五六日]).{0,15}(?:交|发给)/i.test(String(record.text||'')))intake.queue.set(record.id,record);
     }
-    assistantRuntimeRefresh();
+    if(intake.running)return intake.running;
+    intake.running=(async()=>{
+      await Promise.resolve();
+      try{while(intake.queue.size){
+        if(owner!==agentPreferences||storageBlocked||!assistantEngine.state().policy.materials)return;
+        // Interactive requests take priority over material hashing and snapshots.
+        if(agentRequests.size||assistantSubmittingConversations.size){await new Promise(resolve=>setTimeout(resolve,100));continue}
+        const [key,record]=intake.queue.entries().next().value;intake.queue.delete(key);
+        const version=await archiveSha(new TextEncoder().encode(String(record.text||'')));if(owner!==agentPreferences)return;
+        const current=key.startsWith('note:')?notes.find(item=>item.id===record.recordId):scratchEntries.find(item=>item.id===record.recordId);
+        if(!current||current.text!==record.text)continue;
+        assistantEngine.receive({source:'material',key:record.id+':'+version,thread:record.id,ref:{source:'material',id:record.id,version,at:String(record.at||'')}});
+        const workById=new Map(assistantEngine.state().tickets.map(item=>[item.id,item]));
+        for(const [id,job] of assistantBackgroundJobs)if(workById.get(id)?.status==='superseded'&&assistantBackgroundJobs.get(id)===job)assistantBackgroundJobs.delete(id);
+        assistantQueuePass();await archiveYield();
+      }}finally{intake.running=null;if(owner===agentPreferences)assistantRuntimeRefresh()}
+    })();
+    return intake.running;
   }
   function assistantRuntimeStart(){
     if(storageBlocked)return;
@@ -171,6 +186,6 @@
     if(assistantEngine.state().policy.clock&&assistantState().mailbox.enabled){const day=localDay(),bucket=Math.floor(now/3600000);try{assistantEngine.receive({source:'clock',key:'mailbox:'+day+':'+bucket,thread:'mailbox',ref:{source:'clock',id:'mailbox',version:String(bucket)}})}catch(error){notify(error.message)}}
     assistantQueuePass();
   }
-  setInterval(assistantRuntimeTick,30000);
+  registerForegroundTask(assistantRuntimeTick,30000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)assistantRuntimeTick()});
   window.addEventListener('pagehide',()=>{for(const request of [...agentRequests.values()]){try{assistantEngine.control(request.workId,'interrupt')}catch(_){}assistantCancelTransport(request)}for(const id of assistantBackgroundJobs.keys())try{assistantEngine.control(id,'interrupt')}catch(_){}assistantBackgroundJobs.clear();});

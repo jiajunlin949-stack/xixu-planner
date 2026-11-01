@@ -5,6 +5,8 @@
   const toast = root.querySelector('#tide-toast');
   const localDay = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   let DEMO_DAY = localDay(), DEMO_NOW = Date.now();
+  const foregroundTasks=[];
+  function registerForegroundTask(run,interval){foregroundTasks.push({run,interval,last:0})}
   const courses = [];
   const types = {homework:'作业 DDL',exam:'考试',meeting:'会议',task:'每日任务'};
   Object.defineProperty(types,'summary',{value:'每周总结'});
@@ -2117,7 +2119,7 @@
     const archive=note.archive;
     const addedImages=normalizeAttachments(note.images);
     const originalLabel=archive.version===2?'导出原文件':'导出原始 HTML',notice=archive.projectionStatus==='original-only'?'原文件已完整归档，正文与内嵌图片尚未展开，可核对哈希并原样导出。':archive.version===2?'保留原始 '+esc(archive.format.toUpperCase())+' 文件与 '+archive.images.length+' 张阅读图片。文字视图用于检索，原文档版式以原文件为准。':'保留 '+archive.images.length+' 张导出图片与原始 HTML。原图在华为导出前是否处理尚未验证。';
-    return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">'+notice+'</div>'+(archive.warnings||[]).map(text=>'<p class="tide-note">'+esc(text)+'</p>').join('')+'<article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article><p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">'+originalLabel+'</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
+    return top(note.title)+'<div class="xixu-note-timestamps">'+noteTimestampHtml(note)+noteTimestampHtml(note,'imported')+'</div><div class="tide-note">'+notice+'</div>'+(archive.warnings||[]).map(text=>'<p class="tide-note">'+esc(text)+'</p>').join('')+'<article class="xixu-archive-content" data-note-id="'+esc(id)+'">'+(note.archiveEdited?'<div class="xixu-archive-edited">'+esc(note.text)+'</div><details><summary>查看导入时的图文</summary>'+archiveLayoutHtml(archive)+'</details>':archiveLayoutHtml(archive))+(addedImages.length?'<h3>新增图片</h3>'+addedImages.map(image=>'<img src="'+esc(image.dataUrl)+'" alt="'+esc(image.name)+'" loading="lazy">').join(''):'')+'</article>'+noteLinksHtml(note.text)+'<p class="xixu-archive-status" role="status"></p><div class="tide-detail-actions"><button class="tide-secondary" data-action="archive-edit" data-id="'+esc(id)+'">编辑文字副本</button><button class="tide-secondary" data-action="archive-export" data-id="'+esc(id)+'">'+originalLabel+'</button></div><button class="tide-delete" data-action="delete-memory" data-id="'+esc(id)+'">删除这条笔记</button>';
   };
   async function hydrateNoteArchive(){
     const article=main.querySelector('.xixu-archive-content');
@@ -3065,6 +3067,7 @@ function parseClassPeriods(value){
     const retrievalIntent=/有什么|有哪些|哪些|查找|查询|搜索|最近.*(?:截止|作业|考试)|接下来.*(?:截止|作业|考试)|下周.*(?:截止|作业|考试)/.test(query);
     if(retrievalIntent)return {answer:localAgentAnswer(query,refs),refs:refs.slice(0,6),action:{type:'none'},source:'local'};
     const deadline=localDeadlineAction(query,refs);if(deadline)return deadline;
+    if(agentMutationIntent(query)&&assistantRouteIntent(query)==='model')return {answer:'请补充要修改的笔记或事项标题，以及具体要更新的内容。尚未执行任何修改；配置模型后也仍需核对变更。',refs:refs.slice(0,6),action:{type:'none'},source:'local'};
     try{
       const item=normalizeAi(localAiPreview(query));
       if(!item.needsClarification&&item.kind==='item')return {answer:'我已整理成“'+item.title+'”。请核对日期、时间和类型，确认后才会写入。',refs:refs.slice(0,6),action:{type:'create_task',item,reason:'根据你刚才说的内容整理'},source:'local'};
@@ -3092,7 +3095,7 @@ function parseClassPeriods(value){
     agentConversationMetadata();
     if(!agentWorkspaceInitialized){if(!agentInputDraft)agentInputDraft=String(agentPreferences.conversationDrafts[activeConversationId()]||'');agentWorkspaceInitialized=true}
     const id=activeConversationId(),history=activeAgentHistory(),conversations=agentConversations(),current=conversations.find(item=>item.id===id),pendingHere=agentConversationBusy(id),connected=Boolean((window.XixuModels&&aiHasKey())||(typeof knowledgeStatus==='function'&&knowledgeStatus().paired));
-    const scroll=main.querySelector('.xixu-agent-chat-scroll');if(scroll?.dataset.conversationId===id)agentConversationScroll.set(id,scroll.scrollTop);
+    const scroll=main.querySelector('.xixu-agent-chat-scroll'),sameConversation=scroll?.dataset.conversationId===id,followReply=sameConversation&&scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<90;if(sameConversation)agentConversationScroll.set(id,scroll.scrollTop);
     const visible=agentVisibleMessages.get(id)||40,displayHistory=history.slice(-visible),resultIndex=assistantBuildResultIndex(agentHistory,assistantEngine.state().tickets);
     let html='<section class="xixu-agent-workspace '+(agentDrawerOpen?'is-drawer-open':'')+'" aria-label="汐序聊天工作区"><button type="button" class="xixu-agent-drawer-scrim" data-action="agent-close-drawer" aria-label="关闭对话列表" tabindex="-1"></button><aside id="xixu-agent-conversations" class="xixu-agent-sidebar" '+(agentMobile()?(agentDrawerOpen?'role="dialog" aria-modal="true"':'inert aria-hidden="true"'):'role="complementary"')+' aria-label="对话列表"><div class="xixu-agent-sidebar-head"><strong>对话</strong><button type="button" class="tide-icon xixu-agent-drawer-close" data-action="agent-close-drawer" aria-label="关闭对话列表">'+icon('x')+'</button></div><button type="button" class="xixu-agent-sidebar-new" data-action="agent-new-conversation" aria-label="新对话">'+icon('square-pen')+'<span>新对话</span></button><nav class="xixu-agent-session-list" aria-label="历史对话">'+conversations.map(agentConversationRow).join('')+'</nav><button type="button" class="xixu-agent-library" data-action="agent-library">'+icon('notebook-pen')+'<span>我的知识库</span>'+icon('arrow-up-right')+'</button></aside><section class="xixu-agent-shell" data-conversation-id="'+esc(id)+'"><div class="xixu-agent-topbar"><button class="tide-icon xixu-agent-back" data-action="back" aria-label="返回">'+icon('arrow-left')+'</button><button type="button" class="tide-icon xixu-agent-drawer-toggle" data-action="agent-open-drawer" aria-label="打开对话列表" aria-controls="xixu-agent-conversations" aria-expanded="'+agentDrawerOpen+'">'+icon('panel-left')+'</button><button type="button" class="tide-icon" data-action="assistant-work" aria-label="助手工作台">'+icon('layers')+'</button><div class="xixu-agent-brand"><strong>汐序助手</strong><span>'+esc(current?.title||'新对话')+'</span></div><button type="button" class="tide-icon xixu-agent-new" data-action="agent-new-conversation" aria-label="新对话">'+icon('square-pen')+'</button></div><div class="xixu-agent-chat-scroll" data-conversation-id="'+esc(id)+'" role="log" aria-label="对话消息" aria-busy="'+pendingHere+'"><div class="xixu-agent-chat-content">';
     if(history.length){
@@ -3102,7 +3105,7 @@ function parseClassPeriods(value){
     if(pendingHere)html+='<div class="xixu-agent-thinking" role="status"><i></i><i></i><i></i><span>'+(assistantActiveRequest()?.stage==='approval-queued'?'有内容等待发送核对':assistantActiveRequest()?.stage==='retrieving'?'正在查找你的资料':connected?'正在结合你的资料思考':'正在本机整理')+'</span></div>';
     if(agentDraft?.answer&&!agentDraft.ticketId)html+='<div class="xixu-agent-answer">'+agentChoicesHtml(agentDraft.choices)+agentActionHtml(agentDraft.action)+agentDestinationHtml(agentDraft.receipt)+'</div>';
     html+='</div></div><div class="xixu-agent-composer-dock">'+(agentEditingId?'<div class="xixu-agent-editing">正在修改已发送的内容<button type="button" data-action="agent-cancel-edit">取消修改</button></div>':'')+'<form id="xixu-agent-form" class="xixu-agent-composer"><button type="button" class="xixu-agent-image-button" data-action="agent-choose-image" aria-label="从图片读取文字" '+(agentImagePending?'disabled':'')+'>'+icon(agentImagePending?'loader-circle':'plus')+'</button><input id="xixu-agent-image" type="file" accept="image/*" hidden><textarea name="question" required maxlength="'+AGENT_DRAFT_MAX_CHARS+'" rows="1" aria-label="消息" placeholder="和汐序说点什么…">'+esc(agentInputDraft)+'</textarea><button class="xixu-agent-send" type="submit" aria-label="'+(pendingHere?'正在思考':agentEditingId?'重新发送':'发送')+'" '+(agentConversationBusy(activeConversationId())?'disabled':'')+'>'+icon(pendingHere?'loader-circle':'arrow-up')+'</button></form></div></section></section>';
-    requestAnimationFrame(()=>{assistantRestoreActionDrafts();const next=main.querySelector('.xixu-agent-chat-scroll');if(next?.dataset.conversationId===id)next.scrollTop=agentConversationScroll.get(id)??next.scrollHeight});
+    requestAnimationFrame(()=>{assistantRestoreActionDrafts();const next=main.querySelector('.xixu-agent-chat-scroll');if(next?.dataset.conversationId===id)next.scrollTop=followReply?next.scrollHeight:agentConversationScroll.get(id)??next.scrollHeight});
     return html;
   }
   function finishAgent(query,result,request=assistantActiveRequest()){return assistantPublishResult(request,result)}
@@ -3179,7 +3182,7 @@ function parseClassPeriods(value){
     else if(button.dataset.action==='agent-dismiss'&&agentDraft){agentDraft.action={type:'none'};render()}
   });
 
-// Shared source contracts; generated by text serialization.
+  // Generated from shared JSON manifests; do not edit by hand.
   const XIXU_TOOL_MANIFEST={"version":1,"tools":[{"name":"create_event","description":"准备创建会议、考试或截止事项；返回预览，确认后才写入","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["title","date","time","type"],"properties":{"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"type":{"type":"string","enum":["homework","exam","meeting"]},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"course_name":{"type":"string","maxLength":80},"note":{"type":"string","maxLength":1000}}}},{"name":"create_todo","description":"准备创建普通待办；时间可留空，确认后才写入","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["title","date"],"properties":{"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"course_name":{"type":"string","maxLength":80},"note":{"type":"string","maxLength":1000}}}},{"name":"update_event","description":"准备修改已核对来源的事项；必须有真实任务编号与版本，不能直接执行","readOnly":false,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["task_id"],"properties":{"task_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","minLength":1,"maxLength":100},"date":{"type":"string","format":"date"},"time":{"type":"string","pattern":"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$"},"duration_minutes":{"type":"integer","minimum":1,"maximum":1440},"note":{"type":"string","maxLength":1000}}}},{"name":"search_notes","description":"只读查找本机笔记并返回带来源的片段，不修改资料","readOnly":true,"requiresConfirmation":false,"inputSchema":{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":2000},"limit":{"type":"integer","minimum":1,"maximum":20},"date_from":{"type":"string","format":"date"},"date_to":{"type":"string","format":"date"}}}},{"name":"get_schedule","description":"只读查询实际日期课程、事项与截止压力，显式区分硬占用和截止点","readOnly":true,"requiresConfirmation":false,"inputSchema":{"type":"object","additionalProperties":false,"required":["date"],"properties":{"date":{"type":"string","format":"date"},"start_time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"end_time":{"type":"string","pattern":"^([01][0-9]|2[0-3]):[0-5][0-9]$"},"exclude_task_id":{"type":"string","maxLength":128}}}},{"name":"search_web","description":"建议公开网页搜索；只读但需用户另行核对搜索词，不能自动发送私人资料","readOnly":true,"requiresConfirmation":true,"inputSchema":{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":2000},"limit":{"type":"integer","minimum":1,"maximum":8}}}}]};
   const XIXU_PROVIDER_CATALOG={"version":1,"providers":[{"id":"deepseek","label":"DeepSeek","base_url":"https://api.deepseek.com","api":"chat","model":"deepseek-flash"},{"id":"qwen","label":"通义千问","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","api":"chat","model":"qwen-plus"},{"id":"kimi","label":"Kimi","base_url":"https://api.moonshot.cn/v1","api":"chat","model":""},{"id":"doubao","label":"豆包 / 火山方舟","base_url":"https://ark.cn-beijing.volces.com/api/v3","api":"chat","model":""},{"id":"openai","label":"OpenAI","base_url":"https://api.openai.com/v1","api":"responses","model":""},{"id":"gemini","label":"Gemini（兼容接口）","base_url":"https://generativelanguage.googleapis.com/v1beta/openai","api":"chat","model":""},{"id":"claude","label":"Claude","base_url":"https://api.anthropic.com/v1","api":"messages","model":""},{"id":"custom","label":"自定义 HTTPS 接口","base_url":"","api":"chat","model":""}],"defaultCapabilities":{"stream":true,"structured":false,"vision":false,"tools":false,"reasoning":false},"notice":"配置入口和协议适配不等于所有模型均已验证。模型名称及能力以所选模型官方说明为准。密钥不包含在清单或资料备份中。"};
 
@@ -3189,13 +3192,14 @@ function assistantRouteIntent(input,pending=false){
   if(/联网|上网|网页搜索|全网|网上查|web search/i.test(text)&&!/(?:不用|不要|无需|不必|不想|不需要|别)[^，。！？\n]{0,8}(?:联网|上网|网页搜索|全网|网上查)/.test(text))return 'search_web';
   if(pending&&/^(?:算了|取消|不用了|重新开始)[。！!\s]*$/.test(text))return 'cancel_pending';
   if(/调课|换课|互换|对调|节.*(?:调到|改到|换到)|(?:把|将).*(?:课|节).*(?:调到|改到|换到)/.test(text))return 'reschedule';
+  if(/^(?:添加|新增|创建|记录|记住|保存|修改|更新|删除|完成).*(?:需要什么|什么步骤|是什么意思|是什么|怎么|如何|为什么)/.test(text)&&!/[：:]/.test(text))return 'model';
   const question=/是什么|什么意思|什么时候|几点|多少|几项|怎么|怎样|如何|为什么|哪里|能否|是否|[?？]|吗\s*$/.test(text),explicit=/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想要?|我要)\s*)?(?:添加|新增|创建|安排|提醒我|记录|记下|记住|记一下|新建|保存|修改|更新|删除|完成)/.test(text);
   if(question&&!explicit){if(/日程|课程|有课|安排|空闲|有空|冲突|踢球|足球/.test(text))return 'get_schedule';if(/笔记|备忘录|记录|资料|搜索|查找/.test(text))return 'search_notes';return 'model'}
   if(/^(?:(?:请|麻烦)(?:你)?\s*)?(?:(?:帮我|替我|给我|我想要?|我要)\s*)?(?:记下(?:来)?|记住|记一下|记录(?:一下)?|(?:新建|保存|添加)(?:一条|一个)?(?:笔记|备忘录))[\s：:，,]*/.test(text))return 'create_note';
+  if(/^(?:查找|搜索|查一下|找一下|找出|打开)/.test(text))return 'search_notes';
   if(pending&&!explicit&&text.length<=100&&/^(?:是|在|改成|改为|就|那就)?\s*(?:(?:下下|上上|本|这|下|上)?周|\d|[零一二三四五六七八九十两]+[点时月]|今天|明天|明晚|后天|上午|下午|晚上|早上|中午|凌晨)/.test(text))return 'continue_event';
   if(/^(?:修改|更新|删除|完成|把|将)|^(?:帮我|请你?|替我)(?:修改|更新|删除|完成|把|将)/.test(text))return 'model';
   if(explicit||/\bddl\b|截止|交作业|交报告|交论文|提交|考试|期末/i.test(text))return /作业|报告|论文|ddl|截止|提交|考试|期末|会议|开会|汇报/i.test(text)?'create_event':'create_todo';
-  if(/^(?:查找|搜索|查一下|找一下|找出|打开)/.test(text))return 'search_notes';
   return 'model';
 }
 if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteIntent};
@@ -3359,6 +3363,8 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     if(pending&&Date.now()-pending.updatedAt>1800000){delete state.pendingSlots[conversation];pending=null}
     if(/^(?:算了|取消|不用了|重新开始)[。！!\s]*$/.test(text)&&pending){delete state.pendingSlots[conversation];return {answer:'已取消这次未完成的安排，没有写入日程。',refs:[],action:{type:'none'},source:'local',tool:'cancel_pending'}}
     const intent=assistantRouteIntent(text,Boolean(pending)),startsTask=['create_event','create_todo'].includes(intent);
+    // A new explicit note is not a continuation of an unfinished date question.
+    if(pending&&intent==='create_note'){delete state.pendingSlots[conversation];pending=null}
     const supplement=pending&&intent==='continue_event';
     if(!startsTask&&!supplement)return null;
     if(startsTask)pending=null;
@@ -3433,7 +3439,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     }else return false;
     const deltas=assistantDeltas(before,after);if(!deltas.length)throw Error('没有需要保存的变化');
     if(assistantState().journal.length>=1000||assistantStable(assistantState().journal).length+assistantStable(deltas).length>8000000)throw Error('变更档案已满，请先导出完整备份并整理档案。');
-    assistantPlan={before,after,deltas,action:assistantClone(action),draft:button?agentDraft:null,destination,at:new Date().toISOString()};
+    assistantPlan={before,after,deltas,action:assistantClone(action),draft:button?agentDraft:null,destination,from:button?captureMotionBox(button):null,at:new Date().toISOString()};
     assistantShowSheet('核对日程变更',assistantDiffHtml(deltas)+'<p>同一次调课作为一组执行；原提醒将按新课表重新核对，事项提醒随对应日期重建。其他安排不会移动。</p><label class="xixu-check-line"><input type="checkbox" id="xixu-plan-accept">接受这一组变更</label><button class="tide-primary tide-full" data-action="assistant-plan-apply">保存这一组</button>','plan');return true;
   }
   async function assistantApplyPlan(){
@@ -3455,6 +3461,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     }catch(error){assistantRestoreRows(plan.before);agentPreferences.intelligence=previous;throw error}
     if(plan.draft?.ticketId)assistantUpdatePlanMessage(plan);
     else if(plan.draft&&agentDraft===plan.draft){agentCommitReceipt(plan.destination,'查看已保存的安排',receipt.id,'calendar-check');updateAgentAnswer('已按核对内容保存，可以在变更记录中追溯或撤回。')}
+    queueDelightCue('agent-commit',{destination:plan.destination,from:plan.from,label:'已保存'});
     assistantPlan=null;assistantCloseSheet();persist({reminders:false});syncReminders();render(false);notify('变更已保存');
   }
   function assistantUndoJournal(id){
@@ -4172,6 +4179,10 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     const editingId=agentEditingId,previous=editingId?agentHistory.find(item=>item.id===editingId&&String(item.conversationId||'default')===conversationId):null;
     const oldText=previous?.text,oldEditedAt=previous?.editedAt,userId=previous?.id||uid(),now=new Date().toISOString(),owner=agentPreferences;let admitted=false,removedReply=null,replyIndex=-1;
     if(previous&&oldText===query){assistantSubmittingConversations.delete(conversationId);notify('消息内容没有变化');return}
+    // The implicit first conversation is valid before it has any messages.
+    // Register it before yielding, so deletion during hashing still invalidates admission.
+    const conversations=agentConversationMetadata();
+    if(!conversations[conversationId])conversations[conversationId]={createdAt:now,updatedAt:now};
     try{
       const version=await archiveSha(new TextEncoder().encode(query));
       if(owner!==agentPreferences||!agentPreferences.conversations?.[conversationId])throw Error('对话状态已改变，原草稿仍保留');
@@ -4188,7 +4199,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
       // Keep unsent text accessible; never erase another conversation's draft.
       if(admitted){notify('请求已经保存，界面暂未刷新，可在工作台查看');return}
       if(previous){previous.text=oldText;if(oldEditedAt===undefined)delete previous.editedAt;else previous.editedAt=oldEditedAt;if(removedReply)agentHistory.splice(replyIndex,0,removedReply)}else agentHistory=agentHistory.filter(item=>item.id!==userId);
-      agentPreferences.conversationDrafts[conversationId]=original;if(activeConversationId()===conversationId)agentInputDraft=original;
+      if(owner===agentPreferences&&agentPreferences.conversations?.[conversationId]){agentPreferences.conversationDrafts[conversationId]=original;if(activeConversationId()===conversationId)agentInputDraft=original;}
       notify(error.message||'请求未保存，请稍后重试');render(false);
     }finally{assistantSubmittingConversations.delete(conversationId)}
   }
@@ -4394,20 +4405,35 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     const result=assistantEngine.receive({source:'conversation',key:userId+':'+version+':'+(message.editedAt||''),thread:conversationId,ticketId,ref:{source:'conversation',id:userId,version,at:String(message.editedAt||message.createdAt||'')}});
     assistantQueuePass();return result;
   }
-  async function assistantIntakeMaterials(records){
-    if(!assistantRuntimeReady||storageBlocked)return;
+  let assistantMaterialIntake=null;
+  function assistantIntakeMaterials(records){
+    if(!assistantRuntimeReady||storageBlocked)return Promise.resolve();
     const owner=agentPreferences;
+    if(!assistantMaterialIntake||assistantMaterialIntake.owner!==owner)assistantMaterialIntake={owner,queue:new Map(),running:null};
+    const intake=assistantMaterialIntake,tracked=new Set(assistantEngine.state().threads.filter(item=>item.source==='material').map(item=>item.sourceId));
     for(const record of records){
-      if(owner!==agentPreferences||!assistantEngine.state().policy.materials)return;
-      const version=await archiveSha(new TextEncoder().encode(String(record.text||'')));if(owner!==agentPreferences)return;
-      if(!assistantSourceRecords().some(item=>item.id===record.id&&item.text===record.text))continue;
-      // Cursor = content hash in the durable trigger key. Reopening the app or
-      // importing identical material doesn't create a second task.
-      assistantEngine.receive({source:'material',key:record.id+':'+version,thread:record.id,ref:{source:'material',id:record.id,version,at:String(record.at||'')}});
-      for(const [id,job] of assistantBackgroundJobs){const work=assistantEngine.state().tickets.find(item=>item.id===id);if(work?.status==='superseded'&&assistantBackgroundJobs.get(id)===job)assistantBackgroundJobs.delete(id)}
-      assistantQueuePass();await archiveYield();
+      // Do not create durable jobs for every ordinary note on each launch.
+      // Tracked evidence is always rechecked, including cancellation-only edits.
+      if(tracked.has(record.id)||/提交|交(?:作业|报告|开题|稿|材料)|截止|汇报|答辩|开会|考试|开题.*交|(?:号|日|天|周[一二三四五六日]).{0,15}(?:交|发给)/i.test(String(record.text||'')))intake.queue.set(record.id,record);
     }
-    assistantRuntimeRefresh();
+    if(intake.running)return intake.running;
+    intake.running=(async()=>{
+      await Promise.resolve();
+      try{while(intake.queue.size){
+        if(owner!==agentPreferences||storageBlocked||!assistantEngine.state().policy.materials)return;
+        // Interactive requests take priority over material hashing and snapshots.
+        if(agentRequests.size||assistantSubmittingConversations.size){await new Promise(resolve=>setTimeout(resolve,100));continue}
+        const [key,record]=intake.queue.entries().next().value;intake.queue.delete(key);
+        const version=await archiveSha(new TextEncoder().encode(String(record.text||'')));if(owner!==agentPreferences)return;
+        const current=key.startsWith('note:')?notes.find(item=>item.id===record.recordId):scratchEntries.find(item=>item.id===record.recordId);
+        if(!current||current.text!==record.text)continue;
+        assistantEngine.receive({source:'material',key:record.id+':'+version,thread:record.id,ref:{source:'material',id:record.id,version,at:String(record.at||'')}});
+        const workById=new Map(assistantEngine.state().tickets.map(item=>[item.id,item]));
+        for(const [id,job] of assistantBackgroundJobs)if(workById.get(id)?.status==='superseded'&&assistantBackgroundJobs.get(id)===job)assistantBackgroundJobs.delete(id);
+        assistantQueuePass();await archiveYield();
+      }}finally{intake.running=null;if(owner===agentPreferences)assistantRuntimeRefresh()}
+    })();
+    return intake.running;
   }
   function assistantRuntimeStart(){
     if(storageBlocked)return;
@@ -4431,7 +4457,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
     if(assistantEngine.state().policy.clock&&assistantState().mailbox.enabled){const day=localDay(),bucket=Math.floor(now/3600000);try{assistantEngine.receive({source:'clock',key:'mailbox:'+day+':'+bucket,thread:'mailbox',ref:{source:'clock',id:'mailbox',version:String(bucket)}})}catch(error){notify(error.message)}}
     assistantQueuePass();
   }
-  setInterval(assistantRuntimeTick,30000);
+  registerForegroundTask(assistantRuntimeTick,30000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)assistantRuntimeTick()});
   window.addEventListener('pagehide',()=>{for(const request of [...agentRequests.values()]){try{assistantEngine.control(request.workId,'interrupt')}catch(_){}assistantCancelTransport(request)}for(const id of assistantBackgroundJobs.keys())try{assistantEngine.control(id,'interrupt')}catch(_){}assistantBackgroundJobs.clear();});
 
@@ -4509,7 +4535,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   function assistantSafeResult(result){
     // Store only portable source references and bounded excerpts, never token
     // maps, vectors, native handles or provider credentials.
-    const refs=(result.refs||[]).slice(0,12).map(ref=>Object.fromEntries(['id','documentId','chunkId','title','text','url','recordType','kind','action','date','sourceId','chunkStart','chunkEnd','sourceExcerpt','truncated','baseVersion','baseVersionHash'].filter(key=>ref[key]!==undefined).map(key=>[key,ref[key]])));
+    const refs=(result.refs||[]).slice(0,12).map(ref=>({...Object.fromEntries(['id','documentId','chunkId','title','text','url','recordType','kind','action','date','sourceId','chunkStart','chunkEnd','sourceExcerpt','truncated','baseVersion','baseVersionHash'].filter(key=>ref[key]!==undefined).map(key=>[key,ref[key]])),reasons:Array.isArray(ref.reasons)?ref.reasons.slice(0,4).map(reason=>String(reason).slice(0,100)):[]}));
     return assistantClone({...result,refs,action:result.action||{type:'none'}});
   }
   function assistantPublishResult(request,result){
@@ -4832,7 +4858,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   });
   root.addEventListener('submit',event=>{if(event.target.id!=='xixu-checkpoint-filter')return;event.preventDefault();checkpointList(String(new FormData(event.target).get('day')||''))});
   const checkpointTick=()=>{if(!document.hidden)checkpointCapture('每日首次使用快照',true).catch(()=>{checkpointMessage='最近一次每日快照未能保存，请检查可用存储；当前资料仍保留。'})};
-  setTimeout(checkpointTick,0);setInterval(checkpointTick,60000);
+  setTimeout(checkpointTick,0);registerForegroundTask(checkpointTick,60000);
 
   const motionPreference = matchMedia('(prefers-reduced-motion: reduce)');
   const transparencyPreference = matchMedia('(prefers-reduced-transparency: reduce)');
@@ -5368,7 +5394,8 @@ if(typeof module!=='undefined'&&module.exports)module.exports={assistantRouteInt
   syncReminders();
   render();
   let visibleClockBucket=Math.floor(DEMO_NOW/300000);
-  setInterval(()=>{if(document.hidden)return;const now=Date.now(),changedDay=localDay()!==DEMO_DAY,bucket=Math.floor(now/300000);DEMO_NOW=now;if(changedDay){DEMO_DAY=localDay();selectedDay=DEMO_DAY}if(!panel&&(changedDay||((page==='today'||page==='agenda')&&bucket!==visibleClockBucket)))render();visibleClockBucket=bucket},60000);
+  registerForegroundTask(()=>{const now=Date.now(),changedDay=localDay()!==DEMO_DAY,bucket=Math.floor(now/300000);DEMO_NOW=now;if(changedDay){DEMO_DAY=localDay();selectedDay=DEMO_DAY}if(!panel&&(changedDay||((page==='today'||page==='agenda')&&bucket!==visibleClockBucket)))render();visibleClockBucket=bucket},60000);
+  setInterval(()=>{if(document.hidden)return;const now=Date.now();for(const task of foregroundTasks){if(now-task.last<task.interval)continue;task.last=now;try{task.run()}catch(error){notify(error.message||'本次后台维护未完成')}}},30000);
   if(globalThis.Tweak){
     const tweak=new Tweak({container:root,onChange:applyDesign});
     tweak.addSelect(design,'paletteName',{label:'主题配色',options:['Sea mist','Celadon','Moonlight blue']});

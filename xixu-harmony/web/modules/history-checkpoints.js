@@ -58,4 +58,4 @@
   });
   root.addEventListener('submit',event=>{if(event.target.id!=='xixu-checkpoint-filter')return;event.preventDefault();checkpointList(String(new FormData(event.target).get('day')||''))});
   const checkpointTick=()=>{if(!document.hidden)checkpointCapture('每日首次使用快照',true).catch(()=>{checkpointMessage='最近一次每日快照未能保存，请检查可用存储；当前资料仍保留。'})};
-  setTimeout(checkpointTick,0);setInterval(checkpointTick,60000);
+  setTimeout(checkpointTick,0);registerForegroundTask(checkpointTick,60000);

@@ -14,7 +14,7 @@ let browser;
 (async()=>{
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));browser=await chromium.launch(launchOptions);
   const page=await browser.newPage({viewport:{width:390,height:1000}}),errors=[];page.on('pageerror',error=>errors.push(error.message));
-  await page.addInitScript(({state,pdfScans,imageScan})=>{localStorage.setItem('xixu-v1',JSON.stringify(state));window.__pdfPages=[];window.XixuOCR={recognize(data){setTimeout(()=>window.XixuReceiveOCR(true,JSON.stringify(imageScan)),0);return data.startsWith('data:image/')},recognizeDocumentPage(data,page){window.__pdfPages.push(Number(page));setTimeout(()=>window.XixuReceivePdfOCR(true,JSON.stringify(pdfScans[Number(page)-1]),page),0);return data.startsWith('data:image/')}}},{state:baseState,pdfScans,imageScan});
+  await page.addInitScript(({state,pdfScans,imageScan})=>{localStorage.setItem('xixu-v1',JSON.stringify(state));window.__pdfPages=[];window.XixuOCR={recognize(data){setTimeout(()=>window.XixuReceiveOCR(true,JSON.stringify(imageScan)),0);return data.startsWith('data:image/')},recognizeDocumentPage(data,page){const index=window.__pdfPages.length;window.__pdfPages.push(index+1);setTimeout(()=>window.XixuReceivePdfOCR(true,JSON.stringify(pdfScans[index]),page),0);return data.startsWith('data:image/')}}},{state:baseState,pdfScans,imageScan});
   // This fixture deliberately contains week 3 lessons; wall-clock rollover
   // must not hide them before the PDF import assertions even start.
   await page.clock.setFixedTime(new Date('2026-09-17T10:00:00+08:00'));

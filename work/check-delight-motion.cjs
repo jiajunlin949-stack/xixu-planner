@@ -1,3 +1,4 @@
+const {savePlan}=require('./assistant-test-fixture.cjs');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),http=require('node:http');
 const {chromium,launchOptions}=require('./browser-test-runtime.cjs');
 const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile'),types={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png'};
@@ -40,11 +41,11 @@ async function run(){
   await page.locator('.xixu-search-results .xixu-cue-search').first().waitFor();assert.equal(await page.locator('.xixu-search-results mark').count()>0,true);assert.equal(await page.locator('.xixu-search-results .xixu-cue-search').count()>0,true);
 
   await page.getByRole('button',{name:'返回'}).click();await page.locator('.tide-settings-fab').click();await page.getByRole('button',{name:/汐序 Agent/}).click();
-  await page.locator('[name="question"]').fill('明天提醒我晚上八点写交互总结');await page.locator('#xixu-agent-form button[type="submit"]').click();await page.getByRole('button',{name:'确认加入'}).waitFor();await page.getByRole('button',{name:'确认加入'}).click();
+  await page.locator('[name="question"]').fill('明天提醒我晚上八点写交互总结');await page.locator('#xixu-agent-form button[type="submit"]').click();await page.getByRole('button',{name:'确认加入'}).waitFor();await page.getByRole('button',{name:'确认加入'}).click();await savePlan(page);
   await page.locator('.xixu-motion-receipt.is-agent').waitFor();
 
   await page.waitForTimeout(800);assert.equal(await page.locator('.xixu-motion-receipt').count(),0);
-  await page.emulateMedia({reducedMotion:'reduce'});await page.getByRole('button',{name:'查看日程'}).click();await page.locator('#tide-nav [data-page="today"]').click();assert.equal(await page.locator('.xixu-motion-receipt').count(),0);
+  await page.emulateMedia({reducedMotion:'reduce'});await page.getByRole('button',{name:'查看已保存的安排'}).click();await page.locator('#tide-nav [data-page="today"]').click();assert.equal(await page.locator('.xixu-motion-receipt').count(),0);
   assert.deepEqual(errors,[]);
   const result={passed:10,checks:['completion lands with a drawn check and progress response','new task visibly lands in its destination','note draft settles and survives navigation locally','saved note folds into the note index','planning uses a magnetic settle response','delete travels to a reversible undo state','connected page swipe remains enabled','current lesson has a living now state','Agent confirmation materializes toward its destination','search results reveal and highlight the match'],reducedMotion:true,errors};
   fs.writeFileSync('work/delight-motion-checks.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));

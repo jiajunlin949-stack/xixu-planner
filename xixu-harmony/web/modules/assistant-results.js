@@ -72,7 +72,7 @@
   function assistantSafeResult(result){
     // Store only portable source references and bounded excerpts, never token
     // maps, vectors, native handles or provider credentials.
-    const refs=(result.refs||[]).slice(0,12).map(ref=>Object.fromEntries(['id','documentId','chunkId','title','text','url','recordType','kind','action','date','sourceId','chunkStart','chunkEnd','sourceExcerpt','truncated','baseVersion','baseVersionHash'].filter(key=>ref[key]!==undefined).map(key=>[key,ref[key]])));
+    const refs=(result.refs||[]).slice(0,12).map(ref=>({...Object.fromEntries(['id','documentId','chunkId','title','text','url','recordType','kind','action','date','sourceId','chunkStart','chunkEnd','sourceExcerpt','truncated','baseVersion','baseVersionHash'].filter(key=>ref[key]!==undefined).map(key=>[key,ref[key]])),reasons:Array.isArray(ref.reasons)?ref.reasons.slice(0,4).map(reason=>String(reason).slice(0,100)):[]}));
     return assistantClone({...result,refs,action:result.action||{type:'none'}});
   }
   function assistantPublishResult(request,result){

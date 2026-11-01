@@ -5,6 +5,8 @@
   const toast = root.querySelector('#tide-toast');
   const localDay = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   let DEMO_DAY = localDay(), DEMO_NOW = Date.now();
+  const foregroundTasks=[];
+  function registerForegroundTask(run,interval){foregroundTasks.push({run,interval,last:0})}
   const courses = [];
   const types = {homework:'作业 DDL',exam:'考试',meeting:'会议',task:'每日任务'};
   Object.defineProperty(types,'summary',{value:'每周总结'});
@@ -508,7 +510,8 @@
   syncReminders();
   render();
   let visibleClockBucket=Math.floor(DEMO_NOW/300000);
-  setInterval(()=>{if(document.hidden)return;const now=Date.now(),changedDay=localDay()!==DEMO_DAY,bucket=Math.floor(now/300000);DEMO_NOW=now;if(changedDay){DEMO_DAY=localDay();selectedDay=DEMO_DAY}if(!panel&&(changedDay||((page==='today'||page==='agenda')&&bucket!==visibleClockBucket)))render();visibleClockBucket=bucket},60000);
+  registerForegroundTask(()=>{const now=Date.now(),changedDay=localDay()!==DEMO_DAY,bucket=Math.floor(now/300000);DEMO_NOW=now;if(changedDay){DEMO_DAY=localDay();selectedDay=DEMO_DAY}if(!panel&&(changedDay||((page==='today'||page==='agenda')&&bucket!==visibleClockBucket)))render();visibleClockBucket=bucket},60000);
+  setInterval(()=>{if(document.hidden)return;const now=Date.now();for(const task of foregroundTasks){if(now-task.last<task.interval)continue;task.last=now;try{task.run()}catch(error){notify(error.message||'本次后台维护未完成')}}},30000);
   if(globalThis.Tweak){
     const tweak=new Tweak({container:root,onChange:applyDesign});
     tweak.addSelect(design,'paletteName',{label:'主题配色',options:['Sea mist','Celadon','Moonlight blue']});

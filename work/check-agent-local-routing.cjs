@@ -1,3 +1,4 @@
+const {savePlan,undoPlan,installModelFixture,approveFixtureRequests}=require('./assistant-test-fixture.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -56,9 +57,14 @@ async function latest(page) { return (await saved(page)).agentHistory.at(-1).tex
     };
     window.XixuKnowledge = {
       status: () => JSON.stringify({ paired: window.__routingPaired }),
-      call(id) {
-        window.__routingKnowledgeCalls++;
-        setTimeout(() => window.XixuReceiveKnowledge(id, true, JSON.stringify({ answer: '来自电脑知识库的合成回答', answer_generated: true, sources: [] })), 0);
+      call(id,op,raw) {
+        const body=JSON.parse(raw);
+        if(op==='chat-prepare'){
+          window.__routingKnowledgeCalls++;
+          setTimeout(()=>window.XixuReceiveKnowledge(id,true,JSON.stringify({model_configured:true,ticket:'fixture-ticket',destination:'https://model.example.invalid',model:'fixture-model',question:body.query,sources:[],source_refs:[],local_context:[]})),0);
+        }else if(op==='chat-stream'){
+          setTimeout(()=>{const events='data: '+JSON.stringify({type:'delta',text:'来自电脑知识库的合成回答'})+'\n\ndata: '+JSON.stringify({type:'done'})+'\n\n';window.XixuReceiveKnowledgeStream(id,'chunk',btoa(unescape(encodeURIComponent(events))));window.XixuReceiveKnowledgeStream(id,'end','')},0);
+        }
         return true;
       },
     };
@@ -66,7 +72,7 @@ async function latest(page) { return (await saved(page)).agentHistory.at(-1).tex
   const page = await context.newPage();
   page.on('pageerror', error => errors.push(error.message));
   await page.clock.setFixedTime(new Date('2026-10-29T10:00:00+08:00'));
-  await page.goto('http://127.0.0.1:' + server.address().port);
+  await installModelFixture(page);await approveFixtureRequests(page);await page.goto('http://127.0.0.1:' + server.address().port);
   await page.locator('.tide-settings-fab').click();
   await page.locator('[data-action="agent-open"]').click();
 
@@ -75,10 +81,10 @@ async function latest(page) { return (await saved(page)).agentHistory.at(-1).tex
   check('DDL preview leaves tasks unchanged', (await saved(page)).tasks.length === 0);
   check('DDL has an actionable confirmation preview', await page.locator('[data-action="agent-confirm"]').count() === 1);
   check('DDL date and clock remain exact', await page.locator('[data-agent-field="date"]').inputValue() === '2026-10-30' && await page.locator('[data-agent-field="time"]').inputValue() === '18:00');
-  await page.locator('[data-action="agent-confirm"]').click();
+  await page.locator('[data-action="agent-confirm"]').click();await savePlan(page);
   let state = await saved(page);
   check('confirmation writes one DDL with the correct date, clock and type', state.tasks.length === 1 && state.tasks[0].date === '2026-10-30' && state.tasks[0].time === '18:00' && state.tasks[0].type === 'homework');
-  await page.locator('#tide-toast').getByRole('button', { name: '撤销', exact: true }).click();
+  await undoPlan(page);
   check('DDL confirmation remains reversible', (await saved(page)).tasks.length === 0);
 
   const body = '工程想法\n第二行保留  两个空格与 emoji 🧭';
@@ -86,10 +92,10 @@ async function latest(page) { return (await saved(page)).agentHistory.at(-1).tex
   check('explicit note creation makes zero model or computer calls', JSON.stringify(await calls(page)) === JSON.stringify({ ai: 0, knowledge: 0 }));
   check('note preview leaves notes unchanged', (await saved(page)).notes.length === 0);
   check('note body is visible before confirmation', await page.locator('.xixu-agent-note-preview').textContent() === body);
-  await page.locator('[data-action="agent-confirm"]').click();
+  await page.locator('[data-action="agent-confirm"]').click();await savePlan(page);
   state = await saved(page);
   check('note confirmation preserves its exact body and edit timestamp', state.notes.length === 1 && state.notes[0].text === body && state.notes[0].updatedAt === '2026-10-29T02:00:00.000Z');
-  await page.locator('#tide-toast').getByRole('button', { name: '撤销', exact: true }).click();
+  await undoPlan(page);
   check('note confirmation remains reversible', (await saved(page)).notes.length === 0);
   await send(page, '我想记录一下：口语记录也只在确认后保存');
   check('spoken first-person note request stays local and waits for confirmation', (await calls(page)).knowledge === 0 && (await calls(page)).ai === 0 && await page.locator('[data-action="agent-confirm"]').count() === 1 && (await saved(page)).notes.length === 0);
@@ -122,10 +128,10 @@ async function latest(page) { return (await saved(page)).agentHistory.at(-1).tex
   assert.deepEqual(chosenFields,{date:'2026-11-04',time:'18:00',title:'联系导师'},'weekday choice preserves the task title, exact clock and requested week');
   checks.push('weekday choice preserves the task title, exact clock and requested week');
   check('weekday choice remains a local read-only preview', (await saved(page)).tasks.length === 0 && (await calls(page)).ai === 0 && (await calls(page)).knowledge === 0);
-  await page.locator('[data-action="agent-confirm"]').click();
+  await page.locator('[data-action="agent-confirm"]').click();await savePlan(page);
   state = await saved(page);
   check('weekday follow-up confirmation saves exactly the requested task', state.tasks.length === 1 && state.tasks[0].title === '联系导师' && state.tasks[0].date === '2026-11-04' && state.tasks[0].time === '18:00');
-  await page.locator('#tide-toast').getByRole('button', { name: '撤销', exact: true }).click();
+  await undoPlan(page);
   check('weekday follow-up creation is reversible without any API call', (await saved(page)).tasks.length === 0 && (await calls(page)).ai === 0 && (await calls(page)).knowledge === 0);
   await send(page, '帮我添加任务：周天18:00联系导师');
   beforeChoice = (await saved(page)).agentHistory.length;

@@ -37,7 +37,7 @@ async function saveNote(page) {
 }
 async function openNote(page, id) {
   await page.locator('.xixu-note-card[data-id="' + id + '"]').click();
-  await page.locator('#xixu-note-form').waitFor();
+  if(await page.locator('[data-action=archive-edit]').count())await page.locator('[data-action=archive-edit]').click();await page.locator('#xixu-note-form').waitFor();
 }
 
 let browser;
@@ -119,7 +119,7 @@ let browser;
   await page.locator('.tide-settings-fab').click();
   await page.locator('#xixu-note-import-files').setInputFiles({ name: 'supported-notes.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(jsonFixture), 'utf8') });
   await page.locator('#xixu-note-import-review').waitFor();
-  await page.locator('#xixu-note-import-review button[type="submit"]').click();
+  await page.locator('#xixu-note-import-review button[type="submit"]').click();await page.waitForFunction(()=>JSON.parse(localStorage.getItem('xixu-v1')).notes.length===8);
   saved = await state(page);
   const imported = saved.notes.find(note => note.title === '有来源时间的导入'), missing = saved.notes.find(note => note.title === '不含来源时间的导入');
   assert.ok(imported && missing, 'both JSON fixture notes must be committed: ' + JSON.stringify(saved.notes.map(note => ({ title: note.title, updatedAt: note.updatedAt }))));

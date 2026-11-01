@@ -1,3 +1,4 @@
+const {installModelFixture,approveFixtureRequests,savePlan}=require('./assistant-test-fixture.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -39,7 +40,7 @@ async function runCase(width) {
   }, seed);
   const p = await context.newPage(), errors = []; p.on('pageerror', error => errors.push(error.message));
   try {
-    await p.goto('http://127.0.0.1:' + server.address().port); await openAgent(p); await settle(p);
+    await installModelFixture(p);await approveFixtureRequests(p);await p.goto('http://127.0.0.1:' + server.address().port); await openAgent(p); await settle(p);
     check(width + ': older history is not silently truncated', (await state(p)).agentHistory.length === 104);
     check(width + ': history renders a bounded page', await p.locator('.xixu-agent-message').count() === 40);
     await p.locator('[data-action="agent-load-earlier"]').click();
@@ -71,7 +72,7 @@ async function runCase(width) {
     await p.getByRole('textbox', { name: '对话名称' }).fill('研究与日程'); await p.locator('#xixu-agent-name-form button[type=submit]').click();
     if (width < 760) await p.locator('.xixu-agent-drawer-close').click();
     check(width + ': renamed conversation persists', (await state(p)).agentPreferences.conversations[freshId].title === '研究与日程');
-    await p.locator('[name="question"]').fill('帮我检索研究想法，先不要修改资料'); await p.getByRole('button', { name: '发送', exact: true }).click();
+    await p.locator('[name="question"]').fill('综合分析研究想法，先不要修改资料'); await p.getByRole('button', { name: '发送', exact: true }).click();
     await p.waitForFunction(() => window.__workspacePayloads.length === 1);
     await select(p, 'old', width); await p.locator('[name="question"]').fill('等待时仍可以编辑另一段对话的草稿');
     await p.evaluate(() => window.__workspaceReply('这条迟到回复只属于研究与日程。')); await settle(p);

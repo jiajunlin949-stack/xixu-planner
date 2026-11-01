@@ -25,7 +25,7 @@ let browser;
       readChunk(length){const limit=window.__mobilePdf.truncate?Math.max(0,chunks.length-1):chunks.length,index=window.__mobilePdf.chunkIndex;if(index>=limit)return '';const encoded=chunks[index],count=atob(encoded).length;if(count>length)throw Error('chunk exceeds request');window.__mobilePdf.chunkIndex++;window.__mobilePdf.bytesRead+=count;return encoded},
       finish(){window.__mobilePdf.finishCalls++;return true}
     };
-    window.XixuOCR={recognizeDocumentPage(data,pageNumber){const page=Number(pageNumber);window.__mobilePdf.pages.push(page);setTimeout(()=>window.XixuReceivePdfOCR(true,JSON.stringify(scans[page-1]),pageNumber),0);return data.startsWith('data:image/')}};
+    window.XixuOCR={recognizeDocumentPage(data,pageNumber){const page=window.__mobilePdf.pages.length+1;window.__mobilePdf.pages.push(page);setTimeout(()=>window.XixuReceivePdfOCR(true,JSON.stringify(scans[page-1]),pageNumber),0);return data.startsWith('data:image/')}};
   },{state,scans,chunks,size:pdfBytes.length});
   await page.goto('http://127.0.0.1:'+server.address().port);await page.locator('#tide-nav [data-page=timetable]').click();await page.locator('[data-action=import]').click();
   await page.locator('#xixu-import').setInputFiles(pdf);try{await page.locator('#xixu-import-review [data-action=confirm-timetable]').waitFor({timeout:30000})}catch(error){console.error('MOBILE PDF REVIEW:',await page.locator('#xixu-import-review').innerText());throw error}

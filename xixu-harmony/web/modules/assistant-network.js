@@ -277,6 +277,10 @@
     const editingId=agentEditingId,previous=editingId?agentHistory.find(item=>item.id===editingId&&String(item.conversationId||'default')===conversationId):null;
     const oldText=previous?.text,oldEditedAt=previous?.editedAt,userId=previous?.id||uid(),now=new Date().toISOString(),owner=agentPreferences;let admitted=false,removedReply=null,replyIndex=-1;
     if(previous&&oldText===query){assistantSubmittingConversations.delete(conversationId);notify('消息内容没有变化');return}
+    // The implicit first conversation is valid before it has any messages.
+    // Register it before yielding, so deletion during hashing still invalidates admission.
+    const conversations=agentConversationMetadata();
+    if(!conversations[conversationId])conversations[conversationId]={createdAt:now,updatedAt:now};
     try{
       const version=await archiveSha(new TextEncoder().encode(query));
       if(owner!==agentPreferences||!agentPreferences.conversations?.[conversationId])throw Error('对话状态已改变，原草稿仍保留');
@@ -293,7 +297,7 @@
       // Keep unsent text accessible; never erase another conversation's draft.
       if(admitted){notify('请求已经保存，界面暂未刷新，可在工作台查看');return}
       if(previous){previous.text=oldText;if(oldEditedAt===undefined)delete previous.editedAt;else previous.editedAt=oldEditedAt;if(removedReply)agentHistory.splice(replyIndex,0,removedReply)}else agentHistory=agentHistory.filter(item=>item.id!==userId);
-      agentPreferences.conversationDrafts[conversationId]=original;if(activeConversationId()===conversationId)agentInputDraft=original;
+      if(owner===agentPreferences&&agentPreferences.conversations?.[conversationId]){agentPreferences.conversationDrafts[conversationId]=original;if(activeConversationId()===conversationId)agentInputDraft=original;}
       notify(error.message||'请求未保存，请稍后重试');render(false);
     }finally{assistantSubmittingConversations.delete(conversationId)}
   }

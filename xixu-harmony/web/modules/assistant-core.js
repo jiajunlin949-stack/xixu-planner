@@ -157,6 +157,8 @@
     if(pending&&Date.now()-pending.updatedAt>1800000){delete state.pendingSlots[conversation];pending=null}
     if(/^(?:算了|取消|不用了|重新开始)[。！!\s]*$/.test(text)&&pending){delete state.pendingSlots[conversation];return {answer:'已取消这次未完成的安排，没有写入日程。',refs:[],action:{type:'none'},source:'local',tool:'cancel_pending'}}
     const intent=assistantRouteIntent(text,Boolean(pending)),startsTask=['create_event','create_todo'].includes(intent);
+    // A new explicit note is not a continuation of an unfinished date question.
+    if(pending&&intent==='create_note'){delete state.pendingSlots[conversation];pending=null}
     const supplement=pending&&intent==='continue_event';
     if(!startsTask&&!supplement)return null;
     if(startsTask)pending=null;
@@ -231,7 +233,7 @@
     }else return false;
     const deltas=assistantDeltas(before,after);if(!deltas.length)throw Error('没有需要保存的变化');
     if(assistantState().journal.length>=1000||assistantStable(assistantState().journal).length+assistantStable(deltas).length>8000000)throw Error('变更档案已满，请先导出完整备份并整理档案。');
-    assistantPlan={before,after,deltas,action:assistantClone(action),draft:button?agentDraft:null,destination,at:new Date().toISOString()};
+    assistantPlan={before,after,deltas,action:assistantClone(action),draft:button?agentDraft:null,destination,from:button?captureMotionBox(button):null,at:new Date().toISOString()};
     assistantShowSheet('核对日程变更',assistantDiffHtml(deltas)+'<p>同一次调课作为一组执行；原提醒将按新课表重新核对，事项提醒随对应日期重建。其他安排不会移动。</p><label class="xixu-check-line"><input type="checkbox" id="xixu-plan-accept">接受这一组变更</label><button class="tide-primary tide-full" data-action="assistant-plan-apply">保存这一组</button>','plan');return true;
   }
   async function assistantApplyPlan(){
@@ -253,6 +255,7 @@
     }catch(error){assistantRestoreRows(plan.before);agentPreferences.intelligence=previous;throw error}
     if(plan.draft?.ticketId)assistantUpdatePlanMessage(plan);
     else if(plan.draft&&agentDraft===plan.draft){agentCommitReceipt(plan.destination,'查看已保存的安排',receipt.id,'calendar-check');updateAgentAnswer('已按核对内容保存，可以在变更记录中追溯或撤回。')}
+    queueDelightCue('agent-commit',{destination:plan.destination,from:plan.from,label:'已保存'});
     assistantPlan=null;assistantCloseSheet();persist({reminders:false});syncReminders();render(false);notify('变更已保存');
   }
   function assistantUndoJournal(id){

@@ -4,7 +4,7 @@ const raw=path.resolve('xixu-harmony/entry/src/main/resources/rawfile');
 fs.mkdirSync(raw,{recursive:true});
 fs.mkdirSync(path.join(raw,'cmaps'),{recursive:true});
 const shared=path.resolve('shared');
-fs.writeFileSync(path.join(web,'modules','shared-contracts.js'),'  // Generated from shared JSON manifests; do not edit by hand.\n  const XIXU_TOOL_MANIFEST='+fs.readFileSync(path.join(shared,'tool-schemas.json'),'utf8').trim()+';\n  const XIXU_PROVIDER_CATALOG='+fs.readFileSync(path.join(shared,'provider-catalog.json'),'utf8').trim()+';\n');
+fs.writeFileSync(path.join(web,'modules','shared-contracts.js'),'  // Generated from shared JSON manifests; do not edit by hand.\n  const XIXU_TOOL_MANIFEST='+JSON.stringify(JSON.parse(fs.readFileSync(path.join(shared,'tool-schemas.json'),'utf8')))+';\n  const XIXU_PROVIDER_CATALOG='+JSON.stringify(JSON.parse(fs.readFileSync(path.join(shared,'provider-catalog.json'),'utf8')))+';\n');
 
 const moduleFiles=JSON.parse(fs.readFileSync(path.join(web,'modules','manifest.json'),'utf8'));
 const shell=fs.readFileSync(path.join(web,'modules','shell.js'),'utf8');
@@ -12,11 +12,11 @@ const runtime=moduleFiles.map(file=>fs.readFileSync(path.join(web,'modules',file
 const motion=fs.readFileSync(path.join(web,'motion.js'),'utf8');
 const insertion='  function applyDesign(){';
 if(!shell.includes(insertion))throw Error('Application shell insertion point is missing');
-const js=shell.replace(insertion,runtime+'\n'+motion+'\n'+insertion);
+const js=shell.replace(insertion,runtime+'\n'+motion+'\n'+insertion).replace(/\r\n?/g,'\n');
 new vm.Script(js);
 fs.writeFileSync(path.join(raw,'app.js'),js);
 
-const css=['base.css','motion.css','modules/productivity.css','editorial.css','modules/home.css','modules/agent-chat.css','modules/reschedule.css','modules/assistant.css'].map(file=>fs.readFileSync(path.join(web,file),'utf8')).join('\n');
+const css=['base.css','motion.css','modules/productivity.css','editorial.css','modules/home.css','modules/agent-chat.css','modules/reschedule.css','modules/assistant.css'].map(file=>fs.readFileSync(path.join(web,file),'utf8')).join('\n').replace(/\r\n?/g,'\n');
 fs.writeFileSync(path.join(raw,'app.css'),css);
 let markup=fs.readFileSync(path.join(web,'base.html'),'utf8');
 markup=markup.replace('初版体验','内测版').replace('Xixu · campus planner','汐序 · 校园日程手机原型').replace(/<i data-lucide="waves"[^>]*><\/i>/,'<img src="icon.png" alt="">');
