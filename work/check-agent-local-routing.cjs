@@ -35,6 +35,10 @@ async function send(page, query) {
   await page.locator('[name="question"]').fill(query);
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForFunction(count => JSON.parse(localStorage.getItem('xixu-v1')).agentHistory.length === count + 2, before);
+  // Delivery is persisted before the animation-frame UI update. Wait for this
+  // exact reply, rather than inspecting the previous message's controls.
+  const reply = (await saved(page)).agentHistory.at(-1);
+  await page.locator('[data-message-id="' + reply.id + '"]').waitFor();
 }
 async function latest(page) { return (await saved(page)).agentHistory.at(-1).text; }
 
