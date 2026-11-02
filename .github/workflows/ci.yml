@@ -56,7 +56,9 @@ jobs:
       - name: Install companion test dependencies
         run: python -m pip install -r companion/requirements-dev.txt
       - name: Run companion contracts
-        run: python -m pytest companion/tests -q -ra --basetemp=outputs/companion-temp --junitxml=outputs/companion-tests.xml
+        run: |
+          mkdir -p outputs
+          python -m pytest companion/tests -q -ra --basetemp=outputs/companion-temp --junitxml=outputs/companion-tests.xml
       - name: Evaluate synthetic retrieval
         run: python evaluation/evaluate_retrieval.py --run
       - name: Preserve companion evidence
