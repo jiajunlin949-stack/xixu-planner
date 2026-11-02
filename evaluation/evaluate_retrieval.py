@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--run', action='store_true')
     args = parser.parse_args()
     if not args.run:
-        parser.error('需要明确 --run；此脚本不会由构建或 CI 自动运行')
+        parser.error('需要明确 --run；使用 --run 显式执行合成数据评测')
     from xixu_hub.store import Store
     from xixu_hub.vectors import Retriever
     fixture = json.loads((Path(__file__).with_name('retrieval-fixture.json')).read_text('utf-8'))

@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from zipfile import ZipFile
 
 import pytest
@@ -13,10 +15,44 @@ from xixu_hub.chat_exports import parse_chat
 from xixu_hub.note_sync import Conflict, NoteSync
 from xixu_hub.originals import Originals
 from xixu_hub.store import Store
+from xixu_hub.security import Devices
 from xixu_hub.vectors import Retriever, ChromaStore, MilvusStore
 
 TOKEN = 'synthetic-owner-token-no-real-credentials-123'
 AUTH = {'Authorization': 'Bearer ' + TOKEN}
+
+
+def test_pairing_code_is_single_use_under_concurrent_requests(tmp_path):
+    devices = Devices(Store(tmp_path / 'pair.sqlite3'), TOKEN)
+    for _ in range(3):
+        code, _ = devices.code()
+        gate = threading.Barrier(8)
+
+        def pair(index):
+            gate.wait(timeout=10)
+            return devices.pair(code, 'synthetic-device-' + str(index))
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(pair, range(8)))
+        assert sum(result is not None for result in results) == 1
+
+
+def test_pairing_attempt_budget_is_global_under_concurrent_requests(tmp_path):
+    store = Store(tmp_path / 'attempts.sqlite3')
+    devices = Devices(store, TOKEN)
+    code, _ = devices.code()
+    wrong = '00000000' if code != '00000000' else '11111111'
+    gate = threading.Barrier(8)
+
+    def pair(index):
+        gate.wait(timeout=10)
+        return devices.pair(wrong, 'synthetic-device-' + str(index))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(result is None for result in pool.map(pair, range(8)))
+    with store.connection() as db:
+        assert db.execute('SELECT attempts FROM pairing').fetchone()[0] == 5
+    assert devices.pair(code, 'synthetic-device') is None
 
 
 def encoded(value):

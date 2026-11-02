@@ -48,4 +48,4 @@ npm run ci
 
 公开套件预期执行43步（41个回归脚本+2项生成），不需要真实资料和外部模型Key。输出报告在 `outputs/ci/summary.json`；合成PDF由脚本生成。
 
-工程测试、网页演示、真实模型连接和鸿蒙真机验收是四个不同证据层级。完整范围与限制见 [需求验收](PROJECT_STATUS_AND_PLAN.md) 和 [版本记录](../CHANGELOG.md)。
+工程测试、网页演示、真实模型连接和鸿蒙真机验收是四个不同证据层级。运行方法与结果见 [工程验证](VALIDATION_STATUS.md) 和 [版本记录](../CHANGELOG.md)。

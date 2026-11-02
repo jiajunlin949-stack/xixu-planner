@@ -6,19 +6,6 @@
   const teachingWeekOf=date=>1+Math.floor((Date.parse(date)-Date.parse(TERM_MONDAY))/604800000);
   const dateTime=(date,time='23:59')=>Date.parse(date+'T'+time+':00+08:00');
 
-  function workloadDays(from=DEMO_DAY,days=14){
-    const result=[];
-    for(let offset=0;offset<days;offset++){
-      const date=addDays(from,offset),items=tasks.filter(t=>!t.done&&isDeadline(t)&&t.date===date);
-      const weight=items.reduce((sum,t)=>sum+(t.type==='exam'?2:1),0),minutes=items.reduce((sum,t)=>sum+(Number(t.estimateMinutes)||0),0);
-      if(items.length>=3||weight>=4||minutes>=300)result.push({date,items,minutes});
-    }
-    return result;
-  }
-  function workloadWarningHtml(){
-    const busy=workloadDays()[0];if(!busy)return '';
-    return '<button class="xixu-workload" data-action="search-prefill" data-query="'+esc(busy.date)+'">'+icon('triangle-alert')+'<span><strong>'+esc(dateLabel(busy.date)+'任务较集中')+'</strong><small>'+busy.items.length+' 项截止'+(busy.minutes?'，预计 '+Math.ceil(busy.minutes/60)+' 小时':'')+'，建议提前安排</small></span>'+icon('chevron-right')+'</button>';
-  }
   function plannerTimeMinute(value,allowDayEnd=false){
     const match=String(value||'').trim().match(/^(\d{1,2}):(\d{2})$/);if(!match)return NaN;
     const hour=Number(match[1]),minute=Number(match[2]);
@@ -209,11 +196,6 @@
      return top(selected?'编辑笔记':'新建笔记')+'<form id="xixu-note-form" class="xixu-note-editor" data-id="'+esc(selected?.id||'')+'"><input class="xixu-note-title" name="noteTitle" value="'+esc(value.title)+'" placeholder="标题">'+timestamps+'<textarea class="xixu-note-body" name="noteText" maxlength="50000" placeholder="从这里开始写…">'+esc(value.text)+'</textarea><div class="xixu-note-save-state '+(noteEditorDraft?.key===editorKey?'is-saved':'')+'" aria-live="polite">'+(noteEditorDraft?.key===editorKey?'草稿已保存':'')+'</div><div class="xixu-attachment-field"><span>笔记图片（可选）</span><label class="xixu-attachment-add">'+icon('image-plus')+'添加图片<input id="xixu-note-images" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></div><div id="xixu-note-image-list" class="xixu-attachment-grid">'+attachmentDraftHtml(noteImageDraft,'note')+'</div><div class="xixu-note-meta"><label>关联课程<select name="courseRelation" id="xixu-note-course-relation"><option value="none" '+(linked?'':'selected')+'>不关联课程</option><option value="linked" '+(linked?'selected':'')+'>关联课程</option></select></label>'+picker+'</div><div class="xixu-note-editor-actions"><button class="tide-secondary" type="button" data-action="note-to-agent" data-id="'+esc(selected?.id||'')+'">'+icon('wand-sparkles')+'让汐序整理</button><button class="tide-primary" type="submit">'+icon('check')+'保存</button></div></form>'+noteLinksHtml(value.text)+(selected?'<button class="tide-delete" data-action="delete-memory" data-id="'+esc(selected.id)+'">删除这条笔记</button>':'');
   }
 
-  function decodeNoteFile(buffer){
-    const bytes=new Uint8Array(buffer);if(bytes.length>=2&&bytes[0]===255&&bytes[1]===254)return new TextDecoder('utf-16le').decode(bytes.subarray(2));
-    if(bytes.length>=2&&bytes[0]===254&&bytes[1]===255){const swapped=new Uint8Array(bytes.length-2);for(let index=2;index+1<bytes.length;index+=2){swapped[index-2]=bytes[index+1];swapped[index-1]=bytes[index]}return new TextDecoder('utf-16le').decode(swapped)}
-    return new TextDecoder('utf-8').decode(bytes[0]===239&&bytes[1]===187&&bytes[2]===191?bytes.subarray(3):bytes);
-  }
   function htmlNote(raw){
     const documentValue=new DOMParser().parseFromString(raw,'text/html');
     documentValue.querySelectorAll('script,style,noscript').forEach(node=>node.remove());

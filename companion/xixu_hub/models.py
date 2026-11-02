@@ -81,7 +81,7 @@ class ModelClient:
             return text, data.get('usage', {})
         except ModelError:
             raise
-        except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ModelError('模型请求未完成，请检查网络和接口配置。') from exc
 
     async def stream(self, messages):
@@ -148,7 +148,7 @@ class ModelClient:
             yield {'type': 'done', 'usage': usage}
         except ModelError:
             raise
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise ModelError('流式请求中断，请检查网络与接口配置。') from exc
 
 

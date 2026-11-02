@@ -10,7 +10,7 @@
 node work/prepare-native.cjs
 ```
 
-该命令组合模块并检查 JavaScript 语法，不代表原生编译或真机验收。
+资源准备包含模块组合与 JavaScript 语法检查；原生应用按下面的 Release 流程构建。
 
 ## Release 构建
 

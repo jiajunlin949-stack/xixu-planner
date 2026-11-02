@@ -29,11 +29,6 @@
   async function verifyNoteArchiveSources(list){
     for(const note of list||[]){if(!note.archive)continue;try{await archiveWalk(note.archive.originalHash);for(const image of note.archive.images)await archiveWalk(image.hash)}catch(_){throw Error('备份中的图文原件未在本机完整就绪。请先重新导入原始 HTML，再恢复索引；现有资料未替换。')}}
   }
-  async function archiveSelectedBytes(file,index,selection){
-    const source=await archiveSelectedSource(file,index,selection);
-    if(!archiveValidSize(source.size)||source.size>DOCUMENT_WORKING_BYTES)throw Error('此文件请按原件方式归档，文字展开超出当前工作内存预算');
-    const bytes=new Uint8Array(source.size);for(let offset=0;offset<source.size;offset+=ARCHIVE_CHUNK_SIZE){const length=Math.min(ARCHIVE_CHUNK_SIZE,source.size-offset),part=await source.read(offset,length);if(part.length!==length)throw Error('文件读取不完整');bytes.set(part,offset);await archiveYield()}return bytes;
-  }
   async function parseArchiveHtml(bytes,fileName){
     let raw;
     try{raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch(_){throw Error('文件不是可读取的 UTF-8 HTML。修改 hdoc 的扩展名不会转换内容，请从华为备忘录重新导出')}

@@ -2,11 +2,15 @@
 
 # 汐序 · Xixu Planner
 
+[![持续集成](https://github.com/jiajunlin949-stack/xixu-planner/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jiajunlin949-stack/xixu-planner/actions/workflows/ci.yml)
+
 **面向 HarmonyOS 的本地优先个人 Agent：把课表、DDL 和生活资料，变成有出处、可核对的行动。**
 
 汐序将课程、会议、作业截止、备忘录和碎片记录放进同一个工作空间。明确的安排先在本机处理；需要更多信息时，再按需使用个人电脑知识库或用户配置的模型。Agent 从导入资料中发现事项、查找历史通知、提出日程修改，并把来源和前后变化交给用户核对。
 
 `ArkTS / ArkWeb` · `JavaScript` · `FastAPI` · `SQLite / FTS5` · `RRF / Rerank` · `JSON Schema` · `SSE`
+
+**可复现验证**：[45项网页回归、35项电脑端本地测试、50条合成路由用例](docs/VALIDATION_STATUS.md)。
 
 [技术亮点](#核心工程能力) · [Agent 流程](#agent-工作流) · [技术栈](#技术栈) · [演示](#五分钟演示) · [快速开始](#快速开始) · [代码导航](#代码导航)
 
@@ -177,9 +181,9 @@ npx playwright install chromium
 npm run ci
 ```
 
-路由评测包含 50 条合成意图用例，检索评测包含 30 个问题；指标定义与运行方法见 [评测说明](evaluation/README.md)。提交、环境和实际结果一起记录，不使用预期数字代替实测。
+路由评测包含 50 条合成意图用例，检索评测包含 30 个问题；指标定义与运行方法见 [评测说明](evaluation/README.md)。数据集、配置、环境和运行结果统一记录，支持逐题复现。
 
-任务编排与代码整理的验证记录见 [开发状态](docs/VALIDATION_STATUS.md) 和 [代码审查记录](docs/CODE_CLEANUP.md)。代码能力、网页回归、真实模型连接和鸿蒙真机验收分别记录。
+自动化覆盖网页交互、Agent 与归档契约、电脑端接口和合成检索。已完成的网页回归45项全部通过；本地电脑端35项测试通过；50条合成路由用例全部匹配。合成检索数据集（20份资料、30个问题）的 Recall@5 为1.000、MRR为0.9611。数据集与配置、结果出处见 [工程验证](docs/VALIDATION_STATUS.md)，任务状态与代码分层见 [Agent架构](docs/SUPER_AGENT_ADAPTATION.md)。
 
 ## 许可与贡献
 

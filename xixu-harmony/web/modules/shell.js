@@ -117,9 +117,6 @@
     if(page!=='today'){page='today';render();return true;}
     return false;
   };
-  function taskRow(t) {
-    return '<div class="tide-task '+(t.done?'is-done':'')+'"><label class="tide-task-label"><input type="checkbox" data-toggle="'+esc(t.id)+'" '+(t.done?'checked':'')+' aria-label="'+esc((t.done?'取消完成：':'完成：')+t.title)+'"><span class="tide-task-copy"><span class="tide-task-name">'+esc(t.title)+'</span><span class="tide-task-meta">'+(isDeadline(t)?esc(dateLabel(t.date)+' '+t.time+' '+timingWord(t)):esc(course(t.course)?.name||'给自己的一点小安排'))+'</span></span></label><button class="tide-icon" data-action="task-detail" data-id="'+esc(t.id)+'" aria-label="'+esc('编辑或删除：'+t.title)+'">'+icon('ellipsis')+'</button></div>';
-  }
   function courseActivityHtml(c) {
     const items=sortTasks(tasks.filter(t=>t.course===c.id&&!t.done));
     if(!items.length)return '';

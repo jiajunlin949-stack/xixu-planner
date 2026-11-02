@@ -32,6 +32,9 @@ class Devices:
     def pair(self, code, name):
         with self.store.connection() as db:
             # One short-lived code, globally capped attempts; no per-IP bypass.
+            # Claim the write transaction before reading so concurrent requests
+            # cannot reuse a code or race the global attempt budget.
+            db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM pairing LIMIT 1').fetchone()
             if not row or row['expires'] < time.time() or row['attempts'] >= 5:
                 return None

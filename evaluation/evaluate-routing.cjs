@@ -1,5 +1,5 @@
 'use strict';
-// Opt-in only. Not imported by the app, build or CI.
+// Standalone evaluation. Explicit --run is required; never imported by the app.
 const fs=require('node:fs'),path=require('node:path');
 if(!process.argv.includes('--run')){process.stdout.write('Explicit opt-in required: node evaluation/evaluate-routing.cjs --run\n');process.exit(2)}
 const {assistantRouteIntent}=require('../xixu-harmony/web/modules/routing-policy.js');

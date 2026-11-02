@@ -117,9 +117,6 @@
     if(page!=='today'){page='today';render();return true;}
     return false;
   };
-  function taskRow(t) {
-    return '<div class="tide-task '+(t.done?'is-done':'')+'"><label class="tide-task-label"><input type="checkbox" data-toggle="'+esc(t.id)+'" '+(t.done?'checked':'')+' aria-label="'+esc((t.done?'取消完成：':'完成：')+t.title)+'"><span class="tide-task-copy"><span class="tide-task-name">'+esc(t.title)+'</span><span class="tide-task-meta">'+(isDeadline(t)?esc(dateLabel(t.date)+' '+t.time+' '+timingWord(t)):esc(course(t.course)?.name||'给自己的一点小安排'))+'</span></span></label><button class="tide-icon" data-action="task-detail" data-id="'+esc(t.id)+'" aria-label="'+esc('编辑或删除：'+t.title)+'">'+icon('ellipsis')+'</button></div>';
-  }
   function courseActivityHtml(c) {
     const items=sortTasks(tasks.filter(t=>t.course===c.id&&!t.done));
     if(!items.length)return '';
@@ -1582,19 +1579,6 @@
   const teachingWeekOf=date=>1+Math.floor((Date.parse(date)-Date.parse(TERM_MONDAY))/604800000);
   const dateTime=(date,time='23:59')=>Date.parse(date+'T'+time+':00+08:00');
 
-  function workloadDays(from=DEMO_DAY,days=14){
-    const result=[];
-    for(let offset=0;offset<days;offset++){
-      const date=addDays(from,offset),items=tasks.filter(t=>!t.done&&isDeadline(t)&&t.date===date);
-      const weight=items.reduce((sum,t)=>sum+(t.type==='exam'?2:1),0),minutes=items.reduce((sum,t)=>sum+(Number(t.estimateMinutes)||0),0);
-      if(items.length>=3||weight>=4||minutes>=300)result.push({date,items,minutes});
-    }
-    return result;
-  }
-  function workloadWarningHtml(){
-    const busy=workloadDays()[0];if(!busy)return '';
-    return '<button class="xixu-workload" data-action="search-prefill" data-query="'+esc(busy.date)+'">'+icon('triangle-alert')+'<span><strong>'+esc(dateLabel(busy.date)+'任务较集中')+'</strong><small>'+busy.items.length+' 项截止'+(busy.minutes?'，预计 '+Math.ceil(busy.minutes/60)+' 小时':'')+'，建议提前安排</small></span>'+icon('chevron-right')+'</button>';
-  }
   function plannerTimeMinute(value,allowDayEnd=false){
     const match=String(value||'').trim().match(/^(\d{1,2}):(\d{2})$/);if(!match)return NaN;
     const hour=Number(match[1]),minute=Number(match[2]);
@@ -1785,11 +1769,6 @@
      return top(selected?'编辑笔记':'新建笔记')+'<form id="xixu-note-form" class="xixu-note-editor" data-id="'+esc(selected?.id||'')+'"><input class="xixu-note-title" name="noteTitle" value="'+esc(value.title)+'" placeholder="标题">'+timestamps+'<textarea class="xixu-note-body" name="noteText" maxlength="50000" placeholder="从这里开始写…">'+esc(value.text)+'</textarea><div class="xixu-note-save-state '+(noteEditorDraft?.key===editorKey?'is-saved':'')+'" aria-live="polite">'+(noteEditorDraft?.key===editorKey?'草稿已保存':'')+'</div><div class="xixu-attachment-field"><span>笔记图片（可选）</span><label class="xixu-attachment-add">'+icon('image-plus')+'添加图片<input id="xixu-note-images" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></div><div id="xixu-note-image-list" class="xixu-attachment-grid">'+attachmentDraftHtml(noteImageDraft,'note')+'</div><div class="xixu-note-meta"><label>关联课程<select name="courseRelation" id="xixu-note-course-relation"><option value="none" '+(linked?'':'selected')+'>不关联课程</option><option value="linked" '+(linked?'selected':'')+'>关联课程</option></select></label>'+picker+'</div><div class="xixu-note-editor-actions"><button class="tide-secondary" type="button" data-action="note-to-agent" data-id="'+esc(selected?.id||'')+'">'+icon('wand-sparkles')+'让汐序整理</button><button class="tide-primary" type="submit">'+icon('check')+'保存</button></div></form>'+noteLinksHtml(value.text)+(selected?'<button class="tide-delete" data-action="delete-memory" data-id="'+esc(selected.id)+'">删除这条笔记</button>':'');
   }
 
-  function decodeNoteFile(buffer){
-    const bytes=new Uint8Array(buffer);if(bytes.length>=2&&bytes[0]===255&&bytes[1]===254)return new TextDecoder('utf-16le').decode(bytes.subarray(2));
-    if(bytes.length>=2&&bytes[0]===254&&bytes[1]===255){const swapped=new Uint8Array(bytes.length-2);for(let index=2;index+1<bytes.length;index+=2){swapped[index-2]=bytes[index+1];swapped[index-1]=bytes[index]}return new TextDecoder('utf-16le').decode(swapped)}
-    return new TextDecoder('utf-8').decode(bytes[0]===239&&bytes[1]===187&&bytes[2]===191?bytes.subarray(3):bytes);
-  }
   function htmlNote(raw){
     const documentValue=new DOMParser().parseFromString(raw,'text/html');
     documentValue.querySelectorAll('script,style,noscript').forEach(node=>node.remove());
@@ -2071,11 +2050,6 @@
   async function verifyNoteArchiveSources(list){
     for(const note of list||[]){if(!note.archive)continue;try{await archiveWalk(note.archive.originalHash);for(const image of note.archive.images)await archiveWalk(image.hash)}catch(_){throw Error('备份中的图文原件未在本机完整就绪。请先重新导入原始 HTML，再恢复索引；现有资料未替换。')}}
   }
-  async function archiveSelectedBytes(file,index,selection){
-    const source=await archiveSelectedSource(file,index,selection);
-    if(!archiveValidSize(source.size)||source.size>DOCUMENT_WORKING_BYTES)throw Error('此文件请按原件方式归档，文字展开超出当前工作内存预算');
-    const bytes=new Uint8Array(source.size);for(let offset=0;offset<source.size;offset+=ARCHIVE_CHUNK_SIZE){const length=Math.min(ARCHIVE_CHUNK_SIZE,source.size-offset),part=await source.read(offset,length);if(part.length!==length)throw Error('文件读取不完整');bytes.set(part,offset);await archiveYield()}return bytes;
-  }
   async function parseArchiveHtml(bytes,fileName){
     let raw;
     try{raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch(_){throw Error('文件不是可读取的 UTF-8 HTML。修改 hdoc 的扩展名不会转换内容，请从华为备忘录重新导出')}
@@ -2342,11 +2316,6 @@
     }
     return text.replace(/\b[a-z]+\b/g,word=>ragEnglishNoise.has(word)?' ':word).replace(/\s+/g,' ').trim();
   }
-  function ragExpandedText(value){
-    const original=ragSafeText(value).toLowerCase(),extra=[];
-    for(const [word,related] of Object.entries(agentRagSynonyms))if(original.includes(word))extra.push(related);
-    return original+' '+extra.join(' ');
-  }
   function ragTokenWeights(value,stripNoise=true){
     const text=stripNoise?ragContentText(value):ragSafeText(value).toLowerCase(),weights=new Map(),add=(token,weight)=>{if(token)weights.set(token,Math.min(4,(weights.get(token)||0)+weight))};
     for(const word of text.match(/[a-z0-9]+(?:[-_.][a-z0-9]+)*/g)||[])add(word,1.25);
@@ -2383,7 +2352,6 @@
     }
     return ranges;
   }
-  function ragChunkText(value){return ragChunkRanges(value).map(range=>range.text)}
   function ragCourseText(item,rows){
     const meetings=(rows||lessons.filter(lesson=>lesson.course===item.id)).map(lesson=>'周'+'一二三四五六日'[lesson.day]+' '+lesson.room+' 第'+lessonPeriodNumbers(lesson).join('至')+'节 '+lesson.rule+(lesson.dateOverride?' 仅限 '+lesson.dateOverride:'')+(lesson.cancelledDates?.length?' 原日期停课 '+lesson.cancelledDates.join('、'):''));
     const assessment=(item.assessment||[]).map(entry=>entry.name+' '+entry.percent+'%');
@@ -2460,7 +2428,6 @@
     })();
     try{return await agentRagPreparation}finally{agentRagPreparation=null}
   }
-  function ragChunks(){ragPrepareSync();return agentRagIndex.chunks}
   function ragIsoDate(year,month,day){
     const value=new Date(Date.UTC(year,month-1,day));
     return value.getUTCFullYear()===year&&value.getUTCMonth()===month-1&&value.getUTCDate()===day?[year,String(month).padStart(2,'0'),String(day).padStart(2,'0')].join('-'):'';

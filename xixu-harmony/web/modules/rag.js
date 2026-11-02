@@ -34,11 +34,6 @@
     }
     return text.replace(/\b[a-z]+\b/g,word=>ragEnglishNoise.has(word)?' ':word).replace(/\s+/g,' ').trim();
   }
-  function ragExpandedText(value){
-    const original=ragSafeText(value).toLowerCase(),extra=[];
-    for(const [word,related] of Object.entries(agentRagSynonyms))if(original.includes(word))extra.push(related);
-    return original+' '+extra.join(' ');
-  }
   function ragTokenWeights(value,stripNoise=true){
     const text=stripNoise?ragContentText(value):ragSafeText(value).toLowerCase(),weights=new Map(),add=(token,weight)=>{if(token)weights.set(token,Math.min(4,(weights.get(token)||0)+weight))};
     for(const word of text.match(/[a-z0-9]+(?:[-_.][a-z0-9]+)*/g)||[])add(word,1.25);
@@ -75,7 +70,6 @@
     }
     return ranges;
   }
-  function ragChunkText(value){return ragChunkRanges(value).map(range=>range.text)}
   function ragCourseText(item,rows){
     const meetings=(rows||lessons.filter(lesson=>lesson.course===item.id)).map(lesson=>'周'+'一二三四五六日'[lesson.day]+' '+lesson.room+' 第'+lessonPeriodNumbers(lesson).join('至')+'节 '+lesson.rule+(lesson.dateOverride?' 仅限 '+lesson.dateOverride:'')+(lesson.cancelledDates?.length?' 原日期停课 '+lesson.cancelledDates.join('、'):''));
     const assessment=(item.assessment||[]).map(entry=>entry.name+' '+entry.percent+'%');
@@ -152,7 +146,6 @@
     })();
     try{return await agentRagPreparation}finally{agentRagPreparation=null}
   }
-  function ragChunks(){ragPrepareSync();return agentRagIndex.chunks}
   function ragIsoDate(year,month,day){
     const value=new Date(Date.UTC(year,month-1,day));
     return value.getUTCFullYear()===year&&value.getUTCMonth()===month-1&&value.getUTCDate()===day?[year,String(month).padStart(2,'0'),String(day).padStart(2,'0')].join('-'):'';
